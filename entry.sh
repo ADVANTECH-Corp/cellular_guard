@@ -18,7 +18,7 @@ declare -r STATUS_FILE_PATH='/mnt/data/cellular_guard/status'
 declare -r LOG_FILE_PATH='/mnt/data/cellular_guard/cellular_guard.log'
 
 # default not log to file
-PERSISTENT_LOGGING=${PERSISTENT_LOGGING:-n}
+PERSISTENT_LOGGING=${PERSISTENT_LOGGING:-y}
 # max log file size, unit KiB
 MAX_LOG_SIZE=${MAX_LOG_SIZE:-100}
 
