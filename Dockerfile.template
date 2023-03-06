@@ -1,0 +1,14 @@
+ARG BALENA_ARCH=%%BALENA_ARCH%%
+
+FROM balenalib/$BALENA_ARCH-alpine
+
+RUN install_packages dbus bash iproute2 iputils coreutils
+
+WORKDIR /app
+
+COPY entry.sh ./
+COPY gpio ./ 
+COPY VERSION ./
+RUN chmod +x ./gpio && chmod +x ./entry.sh
+
+ENTRYPOINT  ["bash","./entry.sh"]
