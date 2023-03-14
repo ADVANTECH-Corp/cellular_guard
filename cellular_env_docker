@@ -31,3 +31,7 @@ MAX_SIM_ERROR_COUNT=4
 PERSISTENT_LOGGING=y
 # The maximum log file size limit saved in storage, unit KiB
 MAX_LOG_SIZE=100
+
+# y/n to enable cellular guard
+# if n, will loop to sleep
+ENABLE_CELLULAR_GUARD=y
