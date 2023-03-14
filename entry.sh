@@ -310,7 +310,7 @@ get_modem_firmware_revision() {
         return 0
     fi
     debug "ATI result:$result"
-    echo "$result" | sed -n '3 p' | cut -d' ' -f2 | tr -d '\n'
+    echo "$result" | tail -1 | cut -d' ' -f2 | tr -d '\n'
 }
 
 # Network resident of 4G module
