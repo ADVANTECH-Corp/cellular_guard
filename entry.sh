@@ -758,6 +758,15 @@ fi
 
 if [ "$SOURCE_MODE" != y ]; then
 
+    # Check if cellular guard is enabled through env variable.
+    # If not, sleep for an hour (container does not exit that way)
+    # This is mainly used so it does not run on mistake on wrong hardware
+    # and needs to be enabled per device.
+    while [ "$ENABLE_CELLULAR_GUARD" = n ]; do
+        echo 'ENABLE_CELLULAR_GUARD is set to "n". Sleeping for an hour and doing nothing.'
+        sleep 3600
+    done
+
     if ! check_board; then
         echo "suspended due to not Advantech board"
         sleep infinity
