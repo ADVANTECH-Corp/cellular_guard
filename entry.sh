@@ -299,7 +299,7 @@ get_signal_quality() {
         return 0
     fi
     debug "AT+CSQ result:$result"
-    return "$(echo "$result" | cut -d, -f1)"
+    return "$(echo "$result" | tail -1 | cut -d, -f1)"
 }
 
 # get modem firmware revision like: EC21EUXGAR08A04M1G
@@ -676,7 +676,7 @@ print_time_settings() {
 }
 
 leave() {
-    log_to_file "cellular guard exited"
+    log_to_file "cellular guard exited, exit code: $?"
 }
 
 check_board() {
@@ -757,6 +757,7 @@ if [ "$DEBUG" = '1' ]; then
 fi
 
 if [ "$SOURCE_MODE" != y ]; then
+    echo "Cellular Guard: $(cat VERSION)"
 
     # Check if cellular guard is enabled through env variable.
     # If not, sleep for an hour (container does not exit that way)
