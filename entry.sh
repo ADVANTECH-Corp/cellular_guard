@@ -293,13 +293,18 @@ check_sim_ccid() {
 # use the return value as signal quality
 # return 0 means get signal quality failed
 get_signal_quality() {
-    local result
+    local result signal_quality
     get_modem_index || return 0
     if ! result=$(AT_send 'AT+CSQ'); then
         return 0
     fi
     debug "AT+CSQ result:$result"
-    return "$(echo "$result" | tail -1 | cut -d, -f1)"
+    signal_quality="$(echo "$result" | tail -1 | cut -d, -f1)"
+    # not all numbers, wrong quality
+    if [[ ! "$signal_quality" =~ ^[0-9]+$ ]]; then
+        return 0
+    fi
+    return $signal_quality
 }
 
 # get modem firmware revision like: EC21EUXGAR08A04M1G
@@ -341,9 +346,32 @@ check_registration() {
 }
 
 # AT command restart 4G module
-restart_module() {
+at_restart_module() {
     get_modem_index
     AT_send 'AT+CFUN=1,1' &>/dev/null
+    # wait for modem restart
+    sleep 5
+}
+
+# ModemManager api reset 4G module
+restart_module() {
+    get_modem_index
+
+    dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
+        /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.Reset
+
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+}
+
+# Airplane mode switch
+at_cfun01() {
+    get_modem_index
+    AT_send 'AT+CFUN=0' &>/dev/null
+    # wait for modem restart
+    sleep 3
+    AT_send 'AT+CFUN=1' &>/dev/null
     # wait for modem restart
     sleep 5
 }
@@ -351,11 +379,17 @@ restart_module() {
 # Airplane mode switch
 cfun01() {
     get_modem_index
-    AT_send 'AT+CFUN=0' &>/dev/null
-    # wait for modem restart
+
+    dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
+        /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.Enable \
+        boolean:false
+
+    # wait for modem disable
     sleep 3
-    AT_send 'AT+CFUN=1' &>/dev/null
-    # wait for modem restart
+
+    dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
+        /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.Enable \
+        boolean:true
     sleep 5
 }
 
@@ -493,7 +527,7 @@ network_check_loop() {
         debug "do ping network check"
         if ! ping_network; then
             update_status $STATUS_NETWORK_ERROR
-            local signal_quality
+            local signal_quality signal_quality_is_low
             get_signal_quality
             signal_quality=$?
 
@@ -504,10 +538,14 @@ network_check_loop() {
                 # or less than 15, means signal is too weak
                 if [ "$signal_quality" = 99 ] || [ "$signal_quality" -lt 15 ]; then
                     echo "low signal quality: $signal_quality"
+                    signal_quality_is_low=y
                 else
                     log_to_file "ping network error, signal quality: $signal_quality"
                 fi
             fi
+
+            # for log
+            check_registration || true
 
             if [ "$current_frequancy_clear_count" -ge 1 ]; then
                 # Frequency point fault is greater than or equal to 1, abnormal end
@@ -531,8 +569,11 @@ network_check_loop() {
                     fi
 
                     echo "can't access network via cellular reach max:${MAX_PING_ERROR_COUNT_ARRAY[$current_interval_index]}, restart modem module"
-
-                    restart_module
+                    if [ "$signal_quality_is_low" = y ]; then
+                        echo "skip restart module due to low signal quality: $signal_quality"
+                    else
+                        restart_module
+                    fi
                     current_ping_error_count=0
 
                     ((current_interval_index++))
