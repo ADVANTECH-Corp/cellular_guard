@@ -10,3 +10,4 @@ services:
       io.balena.features.procfs: '1' # /proc mount
     network_mode: "host" # to access interface wwan0
     privileged: true # might need write /dev/ttyUSB2
+    oom_kill_disable: true # disable be killed by OOM
