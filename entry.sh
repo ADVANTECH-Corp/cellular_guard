@@ -135,6 +135,28 @@ truncate_log() {
     fi
 }
 
+at_log_through_usb() {
+    local log_pid
+    log_to_file "now start to log raw AT command result"
+    cat /dev/ttyUSB2 >>"${LOG_FILE_PATH}" &
+    log_pid=$!
+
+    # sim card status
+    echo -e "AT+CPIN?\r\n" > /dev/ttyUSB2
+    # registration status
+    echo -en "AT+CEREG?\r\n" >/dev/ttyUSB2
+    echo -en "AT+QENG=\"SERVINGCELL\"\r\n" >/dev/ttyUSB2
+
+    # frequancy info
+    echo -en "AT+QNWINFO\r\n" >/dev/ttyUSB2
+    # signal strength
+    echo -e "AT+CSQ\r\n" >/dev/ttyUSB2
+
+    sleep 10
+    kill $log_pid
+    log_to_file "raw AT command result end"
+}
+
 # hardware reset 4G module
 hard_reset() {
     if [ -e /sys/bus/platform/devices/misc-adv-gpio/minipcie_reset ]; then
@@ -192,6 +214,7 @@ get_modem_index() {
         if [ $? -ne 0 ] || [ -z "$index" ]; then
             # 3 minutes can't get modem index restart ModemManager
             if [ $check_count -gt 36 ]; then
+                at_log_through_usb
                 echo "get modem index timeout, restart ModemManager"
                 restart_ModemManager
                 check_count=0
@@ -798,8 +821,6 @@ if [ "$DEBUG" = '1' ]; then
 fi
 
 if [ "$SOURCE_MODE" != y ]; then
-    echo "Cellular Guard: $(cat VERSION)"
-
     # Check if cellular guard is enabled through env variable.
     # If not, sleep for an hour (container does not exit that way)
     # This is mainly used so it does not run on mistake on wrong hardware
@@ -831,6 +852,8 @@ if [ "$SOURCE_MODE" != y ]; then
         # silence output
         exec &>/dev/null
     fi
+
+    echo "Cellular Guard: $(cat VERSION)"
 
     print_time_settings
     if [ -z "$JUMP" ]; then
