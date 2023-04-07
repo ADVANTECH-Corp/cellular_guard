@@ -8,6 +8,10 @@ services:
       io.balena.features.dbus: '1' # dbus unix socket mount
       io.balena.features.sysfs: '1' # /sys mount
       io.balena.features.procfs: '1' # /proc mount
+    devices:
+      - "/dev/ttyUSB3:/dev/ttyUSB3"
+    cap_add:
+      - SYS_RAWIO
     network_mode: "host" # to access interface wwan0
-    privileged: true # might need write /dev/ttyUSB2
+    privileged: true # might need write /dev/ttyUSB3
     oom_kill_disable: true # disable be killed by OOM

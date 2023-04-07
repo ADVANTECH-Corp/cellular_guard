@@ -137,20 +137,21 @@ truncate_log() {
 
 at_log_through_usb() {
     local log_pid
+    local usb_dev="/dev/ttyUSB3"
     log_to_file "now start to log raw AT command result"
-    cat /dev/ttyUSB2 >>"${LOG_FILE_PATH}" &
+    cat $usb_dev >>"${LOG_FILE_PATH}" &
     log_pid=$!
 
     # sim card status
-    echo -e "AT+CPIN?\r\n" > /dev/ttyUSB2
+    echo -e "AT+CPIN?\r\n" > $usb_dev
     # registration status
-    echo -en "AT+CEREG?\r\n" >/dev/ttyUSB2
-    echo -en "AT+QENG=\"SERVINGCELL\"\r\n" >/dev/ttyUSB2
+    echo -en "AT+CEREG?\r\n" >$usb_dev
+    echo -en "AT+QENG=\"SERVINGCELL\"\r\n" >$usb_dev
 
     # frequancy info
-    echo -en "AT+QNWINFO\r\n" >/dev/ttyUSB2
+    echo -en "AT+QNWINFO\r\n" >$usb_dev
     # signal strength
-    echo -e "AT+CSQ\r\n" >/dev/ttyUSB2
+    echo -e "AT+CSQ\r\n" >$usb_dev
 
     sleep 10
     kill $log_pid
@@ -853,7 +854,7 @@ if [ "$SOURCE_MODE" != y ]; then
         exec &>/dev/null
     fi
 
-    echo "Cellular Guard: $(cat VERSION)"
+    echo "Cellular Guard: $(cat VERSION | tail -1)"
 
     print_time_settings
     if [ -z "$JUMP" ]; then
