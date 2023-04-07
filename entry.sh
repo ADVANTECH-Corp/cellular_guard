@@ -143,7 +143,7 @@ at_log_through_usb() {
     log_pid=$!
 
     # sim card status
-    echo -e "AT+CPIN?\r\n" > $usb_dev
+    echo -e "AT+CPIN?\r\n" >$usb_dev
     # registration status
     echo -en "AT+CEREG?\r\n" >$usb_dev
     echo -en "AT+QENG=\"SERVINGCELL\"\r\n" >$usb_dev
@@ -204,6 +204,10 @@ restart_NetworkManager() {
 # because the modification of MODEM_INDEX will not be effective
 get_modem_index() {
     local index check_count=0
+    # max times = 720x5=3600s=60min
+    local max_wait_count=720
+    # initial wait time = 36x5=180s=3min
+    local current_wait_count=36
     while true; do
         index=$(
             dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
@@ -214,11 +218,18 @@ get_modem_index() {
         # retry if modem manager is not start or modem is not ready
         if [ $? -ne 0 ] || [ -z "$index" ]; then
             # 3 minutes can't get modem index restart ModemManager
-            if [ $check_count -gt 36 ]; then
+            if [ $check_count -gt $current_wait_count ]; then
+                # log by raw AT command
                 at_log_through_usb
                 echo "get modem index timeout, restart ModemManager"
                 restart_ModemManager
                 check_count=0
+                # append wait 1 minute every failed
+                current_wait_count=$((current_wait_count + 12))
+                # but not exceed max
+                if [ $current_wait_count -gt $max_wait_count ]; then
+                    current_wait_count=$max_wait_count
+                fi
             fi
             sleep 5
             ((check_count++))
