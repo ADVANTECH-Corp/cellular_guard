@@ -270,6 +270,13 @@ AT_send() {
     cut -d: -f2- <<<"$at_result" | sed -e 's|^[[:space:]]*||'
 }
 
+get_property() {
+    get_modem_index
+    dbus-send --system --print-reply --type=method_call --dest=org.freedesktop.ModemManager1 \
+        /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" \
+        org.freedesktop.DBus.Properties.Get string:"org.freedesktop.ModemManager1.Modem" string:"$1"
+}
+
 # AT+QMBNCFG="AutoSel"
 # MBNCFG="AutoSel",1
 check_mbn() {
@@ -420,7 +427,7 @@ cfun01() {
         boolean:false
 
     # wait for modem disable
-    sleep 3
+    sleep 5
 
     dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
         /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.Enable \

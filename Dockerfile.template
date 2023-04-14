@@ -2,13 +2,14 @@ ARG BALENA_ARCH=%%BALENA_ARCH%%
 
 FROM balenalib/$BALENA_ARCH-alpine
 
-RUN install_packages dbus bash iproute2 iputils coreutils
+RUN install_packages dbus bash iproute2 iputils coreutils python3 py3-gobject3 libqmi
 
 WORKDIR /app
 
 COPY entry.sh ./
-COPY gpio ./ 
+COPY gpio ./
 COPY VERSION ./
-RUN chmod +x ./gpio && chmod +x ./entry.sh
+COPY simple-tester-python ./
+RUN chmod +x ./gpio && chmod +x ./entry.sh && chmod +x ./simple-tester-python
 
 ENTRYPOINT  ["bash","./entry.sh"]
