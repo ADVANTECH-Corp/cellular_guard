@@ -173,6 +173,34 @@ hard_reset() {
     sleep 5
 }
 
+test_qmi() {
+    debug "$(./simple-tester-python /dev/cdc-wdm0 2>&1)"
+}
+
+stop_service() {
+    local service_name="$1"
+    if ! [[ $service_name =~ \.service$ ]]; then
+        service_name="$service_name.service"
+    fi
+    dbus-send --print-reply --type=method_call --system --dest=org.freedesktop.systemd1 \
+        /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager.StopUnit \
+        string:"$service_name" string:"replace" || {
+        return 1
+    }
+}
+
+start_service() {
+    local service_name="$1"
+    if ! [[ $service_name =~ \.service$ ]]; then
+        service_name="$service_name.service"
+    fi
+    dbus-send --print-reply --type=method_call --system --dest=org.freedesktop.systemd1 \
+        /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager.StartUnit \
+        string:"$service_name" string:"replace" || {
+        return 1
+    }
+}
+
 # Call dbus restart a systemd service
 # Reference: https://dbus.freedesktop.org/doc/dbus-send.1.html
 # https://www.balena.io/docs/learn/develop/runtime/#d-bus-communication-with-host-os
@@ -188,16 +216,12 @@ restart_service() {
     }
 }
 
-restart_ModemManager() {
-    restart_service ModemManager
-    # wait for service restart
-    sleep 60
-}
-
-restart_NetworkManager() {
-    restart_service NetworkManager
-    # wait for service restart
-    sleep 60
+# test dbus is working
+# try get active state of ModemManager.serivice by dbus
+test_dbus() {
+    debug "test dbus," "ModemManager State:" "$(dbus-send --system --type=method_call --print-reply=literal \
+        --dest=org.freedesktop.systemd1 /org/freedesktop/systemd1/unit/ModemManager_2eservice \
+        org.freedesktop.DBus.Properties.Get string:'org.freedesktop.systemd1.Unit' string:"ActiveState" | awk '{print $2}')"
 }
 
 # do not run this in a subshell $() or backticks ``
@@ -219,10 +243,19 @@ get_modem_index() {
         if [ $? -ne 0 ] || [ -z "$index" ]; then
             # 3 minutes can't get modem index restart ModemManager
             if [ $check_count -gt $current_wait_count ]; then
+                echo "get modem index timeout, will restart ModemManager"
+
                 # log by raw AT command
                 at_log_through_usb
-                echo "get modem index timeout, restart ModemManager"
-                restart_ModemManager
+                test_dbus
+
+                stop_service ModemManager
+                sleep 20
+                debug "now test qmi status:"
+                test_qmi
+                sleep 40
+                start_service ModemManager
+
                 check_count=0
                 # append wait 1 minute every failed
                 current_wait_count=$((current_wait_count + 12))
@@ -270,6 +303,7 @@ AT_send() {
     cut -d: -f2- <<<"$at_result" | sed -e 's|^[[:space:]]*||'
 }
 
+# Get property of ModemManager
 get_property() {
     get_modem_index
     dbus-send --system --print-reply --type=method_call --dest=org.freedesktop.ModemManager1 \
@@ -387,6 +421,17 @@ check_registration() {
     fi
 }
 
+# AT+CGACT?
+# check data connection
+check_data_connection() {
+    get_modem_index || return 0
+    local result
+    if ! result=$(AT_send 'AT+CGACT?'); then
+        return 0
+    fi
+    debug "AT+CGACT? result:$result"
+}
+
 # AT command restart 4G module
 at_restart_module() {
     get_modem_index
@@ -419,15 +464,27 @@ at_cfun01() {
 }
 
 # Airplane mode switch
+# don't use, some steps not work
 cfun01() {
     get_modem_index
 
+    # NetworkManager will re-enable modem is have connection set
     dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
         /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.Enable \
         boolean:false
 
-    # wait for modem disable
+    # set power state to MM_MODEM_POWER_STATE_OFF
+    # EC20 not supported set power state
+    dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
+        /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.SetPowerState \
+        uint32:1
+    #
     sleep 5
+
+    # restore to MM_MODEM_POWER_STATE_ON
+    dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
+        /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.SetPowerState \
+        uint32:3
 
     dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
         /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.Enable \
@@ -450,6 +507,17 @@ ping_network() {
     # return 1 if packet loose
     # return 2 if error
     ping -I wwan0 -c1 -W 5 8.8.8.8 &>/dev/null
+}
+
+get_ip_info() {
+    ip address show dev wwan0
+}
+
+gather_info2log() {
+    # do a check for log
+    check_registration
+    check_data_connection
+    debug "$(get_ip_info)"
 }
 
 # entry of "mbn module"
@@ -483,9 +551,6 @@ sim_status_loop() {
             restart_module
             return 1
         fi
-
-        # do a check for log
-        check_registration || true
 
         if ! check_sim_ccid; then
 
@@ -586,8 +651,7 @@ network_check_loop() {
                 fi
             fi
 
-            # for log
-            check_registration || true
+            gather_info2log
 
             if [ "$current_frequancy_clear_count" -ge 1 ]; then
                 # Frequency point fault is greater than or equal to 1, abnormal end
@@ -627,7 +691,7 @@ network_check_loop() {
                 else
                     # do cfun01 start from second time
                     if [ "$current_ping_error_count" -ge 2 ]; then
-                        cfun01
+                        at_cfun01
                     fi
                     current_sleep_interval=${PING_INTERVALS_ARRAY[$current_interval_index]}
                     echo "can't access network via cellular $current_ping_error_count times," \
