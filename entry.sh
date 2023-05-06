@@ -691,6 +691,7 @@ network_check_loop() {
                 else
                     # do cfun01 start from second time
                     if [ "$current_ping_error_count" -ge 2 ]; then
+                        echo "do cfun01"
                         at_cfun01
                     fi
                     current_sleep_interval=${PING_INTERVALS_ARRAY[$current_interval_index]}
