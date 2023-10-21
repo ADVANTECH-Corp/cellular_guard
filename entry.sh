@@ -6,8 +6,12 @@
 # Author: Hong.Guo, hong.guo@advantech.com.cn
 #
 
-# a script to monitor modem state
+# a script to monitor modem state and auto restore by reset modem
 #
+
+# VSCode plugin shellcheck options
+# shellcheck disable=SC2182
+# shellcheck disable=SC2181
 
 set -o pipefail
 trap 'leave' EXIT
@@ -16,13 +20,14 @@ trap 'leave' EXIT
 
 declare -r STATUS_FILE_PATH='/mnt/data/cellular_guard/status'
 declare -r LOG_FILE_PATH='/mnt/data/cellular_guard/cellular_guard.log'
+declare -r STATE_JSON_PATH='/mnt/data/cellular_guard/state.json'
 
-# default not log to file
+# log to file
 PERSISTENT_LOGGING=${PERSISTENT_LOGGING:-y}
 # max log file size, unit KiB
 MAX_LOG_SIZE=${MAX_LOG_SIZE:-100}
 
-# Used for delay time of "main program module" loop, default:8h
+# Used for delay time of "main program module" loop
 CHECK_INTERVAL=${CHECK_INTERVAL:-1h}
 
 # the interval of ping error is: 60x(4-1)=3 minutes, 600x(4-1)=30 minutes, 600x(4-1)=30 minutes, 3600x(4-1)=3 hours
@@ -35,13 +40,13 @@ IFS=" " read -r -a MAX_PING_ERROR_COUNT_ARRAY <<<"$MAX_PING_ERROR_COUNT"
 
 PING_INTERVAL_NORMAL=${PING_INTERVAL_NORMAL:-10m}
 
-# Minimum value of 4G module frequency clearing of "frequency maintenance module", default:3
+# Minimum value of 4G module frequency clearing of "frequency maintenance module"
 MAX_FREQUENCY_ERROR_COUNT_MIN=${MAX_FREQUENCY_ERROR_COUNT_MIN:-3}
 
-# Max value of 4G module frequency clearing of "frequency maintenance module", default:5
+# Max value of 4G module frequency clearing of "frequency maintenance module"
 MAX_FREQUENCY_ERROR_COUNT_MAX=${MAX_FREQUENCY_ERROR_COUNT_MAX:-5}
 
-# Used for trigger 4G module frequency clearing of "SIM card maintenance module", default:4
+# Used for trigger 4G module frequency clearing of "SIM card maintenance module"
 MAX_SIM_ERROR_COUNT=${MAX_SIM_ERROR_COUNT:-4}
 
 # corrent num of modem manager
@@ -49,42 +54,279 @@ MODEM_INDEX=0
 # count of 4G frequency clearing of "frequency maintenance module"
 CURRENT_MAX_FREQUENCY_ERROR_COUNT=${MAX_FREQUENCY_ERROR_COUNT_MIN}
 
-declare -r STATUS_OK='ok'
-declare -r STATUS_SIM_ERROR10='sim_error10'
-declare -r STATUS_SIM_ERROR='sim_error'
-declare -r STATUS_NETWORK_ERROR='network_error'
+declare -Ar NETWORK_STATUS=(
+    ["OK"]="ok"
+    ["SIM_ERROR10"]="sim_error10"
+    ["SIM_ERROR"]="sim_error"
+    ["NETWORK_ERROR"]="network_error"
+    ["NETWORK_ERROR_NO_IP"]="network_error_no_ip"
+    ["NETWORK_ERROR_LOW_SIGNAL"]="network_error_low_signal"
+    ["MODEM_BRICKED"]="modem_bricked"
+    ["MODEM_UNKNOWN"]="modem_unknown"
+    ["MODEM_MANAGER_ERR"]="modem_manager_err"
+)
 
-# current cellular network status
-# ok: network is ok
-# sim_error: sim card error
-# sim_error10: sim card not inserted
-# network_error: can not ping network
-CURRENT_STATUS=
+declare -A ERROR_COUNTS=(
+    ["SIM_ERROR10"]=0
+    ["SIM_ERROR"]=0
+    ["NETWORK_ERROR"]=0
+    ["NETWORK_ERROR_NO_IP"]=0
+    ["NETWORK_ERROR_LOW_SIGNAL"]=0
+    ["MODEM_MANAGER_ERR"]=0
+    ["MODEM_FREQUENCY_CLEAR"]=0
+    ["MM_RESTART"]=0
+    ["MM_RESTART_SUCCESS"]=0
+    ["MODEM_AIRPLANE_MODE_SWITCH"]=0
+    ["MODEM_AIRPLANE_MODE_SWITCH_SUCCESS"]=0
+    ["MODEM_SOFT_RESET_SUCCESS"]=0
+    ["MODEM_SOFT_RESET"]=0
+    ["MODEM_SOFT_RESET_SUCCESS"]=0
+    ["MODEM_HARD_RESET"]=0
+    ["MODEM_HARD_RESET_SUCCESS"]=0
+)
 
-# from parameters
+declare -A ERROR_TIMES=(
+    ["MM_RESTART_LAST_TIME"]=""
+    ["MM_RESTART_LAST_TIME_SUCCESS"]=""
+    ["MODEM_AIRPLANE_MODE_SWITCH_LAST_TIME"]=""
+    ["MODEM_AIRPLANE_MODE_SWITCH_LAST_TIME_SUCCESS"]=""
+    ["MODEM_SOFT_RESET_LAST_TIME"]=""
+    ["MODEM_SOFT_RESET_LAST_TIME_SUCCESS"]=""
+    ["MODEM_HARD_RESET_LAST_TIME"]=""
+    ["MODEM_HARD_RESET_LAST_TIME_SUCCESS"]=""
+    ["SIM_ERROR10_LAST_TIME"]=""
+    ["SIM_ERROR_LAST_TIME"]=""
+    ["NETWORK_ERROR_NO_IP_LAST_TIME"]=""
+    ["NETWORK_ERROR_LAST_TIME"]=""
+    ["NETWORK_ERROR_LOW_SIGNAL_LAST_TIME"]=""
+    ["MODEM_MANAGER_ERR_LAST_TIME"]=""
+    ["MODEM_FREQUENCY_CLEAR_LAST_TIME"]=""
+)
+
+# current cellular network status, initial to ok
+CURRENT_STATUS=${NETWORK_STATUS['OK']}
+# iccid record
+# iccid will obtained by check_sim_ccid
+ICCID=
+# version record, get from VERSION file at script beginning
+VERSION=
+# tempary global variable
+# use global variable to avoid subshell can't not modify global variable
+GLOBAL_VAR=
+# dirty tag of state.json
+STATE_DIRTY=false
+
+# from script parameters, for debug only
 JUMP=
-SOURCE_MODE=n
+SOURCE_MODE=false
 DEBUG=
 #  ---------- global variables end ------------
+
+initial_state() {
+    if [ -e $STATE_JSON_PATH ]; then
+        local state_init_script
+        state_init_script="$(jq -r '.extra | @sh "
+            # extra mm_restart
+            ERROR_COUNTS[\"MM_RESTART\"]=\(.mm_restart.count // "0")
+            ERROR_COUNTS[\"MM_RESTART_SUCCESS\"]=\(.mm_restart.count_success // "0")
+            ERROR_TIMES[\"MM_RESTART_LAST_TIME\"]=\(.mm_restart.last_time // "")
+            ERROR_TIMES[\"MM_RESTART_LAST_TIME_SUCCESS\"]=\(.mm_restart.last_time // "")
+
+            # extra modem_airplane_mode_switch
+            ERROR_COUNTS[\"MODEM_AIRPLANE_MODE_SWITCH\"]=\(.modem_airplane_mode_switch.count // "0")
+            ERROR_COUNTS[\"MODEM_AIRPLANE_MODE_SWITCH_SUCCESS\"]=\(.modem_airplane_mode_switch.count_success // "0")
+            ERROR_TIMES[\"MODEM_AIRPLANE_MODE_SWITCH_LAST_TIME\"]=\(.modem_airplane_mode_switch.last_time // "")
+            ERROR_TIMES[\"MODEM_AIRPLANE_MODE_SWITCH_LAST_TIME_SUCCESS\"]=\(.modem_airplane_mode_switch.last_time_success // "")
+
+            # extra modem_soft_reset
+            ERROR_COUNTS[\"MODEM_SOFT_RESET\"]=\(.modem_soft_reset.count // "0")
+            ERROR_COUNTS[\"MODEM_SOFT_RESET_SUCCESS\"]=\(.modem_soft_reset.count_success // "0")
+            ERROR_TIMES[\"MODEM_SOFT_RESET_LAST_TIME\"]=\(.modem_soft_reset.last_time // "")
+            ERROR_TIMES[\"MODEM_SOFT_RESET_LAST_TIME_SUCCESS\"]=\(.modem_soft_reset.last_time_success // "")
+
+            # extra modem_hard_reset
+            ERROR_COUNTS[\"MODEM_HARD_RESET\"]=\(.modem_hard_reset.count // "0")
+            ERROR_COUNTS[\"MODEM_HARD_RESET_SUCCESS\"]=\(.modem_hard_reset.count_success // "0")
+            ERROR_TIMES[\"MODEM_HARD_RESET_LAST_TIME\"]=\(.modem_hard_reset.last_time // "")
+            ERROR_TIMES[\"MODEM_HARD_RESET_LAST_TIME_SUCCESS\"]=\(.modem_hard_reset.last_time_success // "")
+
+            # extra sim_error10
+            ERROR_COUNTS[\"SIM_ERROR10\"]=\(.sim_error10.count // "0")
+            ERROR_TIMES[\"SIM_ERROR10_LAST_TIME\"]=\(.sim_error10.last_time // "")
+
+            # extra sim_error
+            ERROR_COUNTS[\"SIM_ERROR\"]=\(.sim_error.count // "0")
+            ERROR_TIMES[\"SIM_ERROR_LAST_TIME\"]=\(.sim_error.last_time // "")
+
+            # extra network_error_no_ip
+            ERROR_COUNTS[\"NETWORK_ERROR_NO_IP\"]=\(.network_error_no_ip.count // "0")
+            ERROR_TIMES[\"NETWORK_ERROR_NO_IP_LAST_TIME\"]=\(.network_error_no_ip.last_time // "")
+
+            # extra network_error_low_signal
+            ERROR_COUNTS[\"NETWORK_ERROR\"]=\(.network_error.count // "0")
+            ERROR_TIMES[\"NETWORK_ERROR_LAST_TIME\"]=\(.network_error.last_time // "")
+
+            # extra network_error_low_signal
+            ERROR_COUNTS[\"NETWORK_ERROR_LOW_SIGNAL\"]=\(.network_error_low_signal.count // "0")
+            ERROR_TIMES[\"NETWORK_ERROR_LOW_SIGNAL_LAST_TIME\"]=\(.network_error_low_signal.last_time // "")
+
+            # extra modem_manager_err
+            ERROR_COUNTS[\"MODEM_MANAGER_ERR\"]=\(.modem_manager_err.count // "0")
+            ERROR_TIMES[\"MODEM_MANAGER_ERR_LAST_TIME\"]=\(.modem_manager_err.last_time // "")
+
+            # extra modem_frequency_clear
+            ERROR_COUNTS[\"MODEM_FREQUENCY_CLEAR\"]=\(.modem_frequency_clear.count // "0")
+            ERROR_TIMES[\"MODEM_FREQUENCY_CLEAR_LAST_TIME\"]=\(.modem_frequency_clear.last_time // "")
+         "' $STATE_JSON_PATH)" || {
+            echo "jq get state.json error"
+            return 1
+        }
+        eval "$state_init_script" || {
+            echo "get initial state from state.json error: $(sed 's/^[ \t]*//;s/[ \t]*$//' <<<"$state_init_script")"
+            return 1
+        }
+        debug "state init from state.json, initial content: $(sed 's/^[ \t]*//;s/[ \t]*$//' <<<"$state_init_script")"
+    fi
+}
+
+get_utc_date() {
+    date -u "+%Y-%m-%dT%H:%M:%SZ"
+}
+
+# check state changes and save it to state.json
+save_state() {
+    if ! $STATE_DIRTY; then
+        return
+    fi
+    local save="$STATE_JSON_PATH.save"
+    mkdir -p "$(dirname $save)"
+    cat >$save <<EOF
+{
+  "timestamp": "$(get_utc_date)",
+  "balena_uuid": "$BALENA_DEVICE_UUID",
+  "ICCID": "$ICCID",
+  "name": "CellularGuard",
+  "version": "$VERSION",
+  "result": "cg.$CURRENT_STATUS",
+  "extra": {
+    "mm_restart": {
+      "count": "${ERROR_COUNTS["MM_RESTART"]}",
+      "count_success": "${ERROR_COUNTS["MM_RESTART_SUCCESS"]}",
+      "last_time": "${ERROR_TIMES["MM_RESTART_LAST_TIME"]}",
+      "last_time_success": "${ERROR_TIMES["MM_RESTART_LAST_TIME_SUCCESS"]}"
+    },
+    "modem_airplane_mode_switch": {
+      "count": "${ERROR_COUNTS["MODEM_AIRPLANE_MODE_SWITCH"]}",
+      "count_success": "${ERROR_COUNTS["MODEM_AIRPLANE_MODE_SWITCH_SUCCESS"]}",
+      "last_time": "${ERROR_TIMES["MODEM_AIRPLANE_MODE_SWITCH_LAST_TIME"]}",
+      "last_time_success": "${ERROR_TIMES["MODEM_AIRPLANE_MODE_SWITCH_LAST_TIME_SUCCESS"]}"
+    },
+    "modem_soft_reset": {
+      "count": "${ERROR_COUNTS["MODEM_SOFT_RESET"]}",
+      "count_success": "${ERROR_COUNTS["MODEM_SOFT_RESET_SUCCESS"]}",
+      "last_time": "${ERROR_TIMES["MODEM_SOFT_RESET_LAST_TIME"]}",
+      "last_time_success": "${ERROR_TIMES["MODEM_SOFT_RESET_LAST_TIME_SUCCESS"]}"
+    },
+    "modem_hard_reset": {
+      "count": "${ERROR_COUNTS["MODEM_HARD_RESET"]}",
+      "count_success": "${ERROR_COUNTS["MODEM_HARD_RESET_SUCCESS"]}",
+      "last_time": "${ERROR_TIMES["MODEM_HARD_RESET_LAST_TIME"]}",
+      "last_time_success": "${ERROR_TIMES["MODEM_HARD_RESET_LAST_TIME_SUCCESS"]}"
+    },
+    "sim_error10": {
+      "count": "${ERROR_COUNTS["SIM_ERROR10"]}",
+      "last_time": "${ERROR_TIMES["SIM_ERROR10_LAST_TIME"]}"
+    },
+    "sim_error": {
+      "count": "${ERROR_COUNTS["SIM_ERROR"]}",
+      "last_time": "${ERROR_TIMES["SIM_ERROR_LAST_TIME"]}"
+    },
+    "network_error_no_ip": {
+      "count": "${ERROR_COUNTS["NETWORK_ERROR_NO_IP"]}",
+      "last_time": "${ERROR_TIMES["NETWORK_ERROR_NO_IP_LAST_TIME"]}"
+    },
+    "network_error_low_signal": {
+      "count": "${ERROR_COUNTS["NETWORK_ERROR_LOW_SIGNAL"]}",
+      "last_time": "${ERROR_TIMES["NETWORK_ERROR_LOW_SIGNAL_LAST_TIME"]}"
+    },
+    "network_error": {
+      "count": "${ERROR_COUNTS["NETWORK_ERROR"]}",
+      "last_time": "${ERROR_TIMES["NETWORK_ERROR_LAST_TIME"]}"
+    },
+    "modem_manager_err": {
+      "count": "${ERROR_COUNTS["MODEM_MANAGER_ERR"]}",
+      "last_time": "${ERROR_TIMES["MODEM_MANAGER_ERR_LAST_TIME"]}"
+    },
+    "modem_frequency_clear": {
+      "count": "${ERROR_COUNTS["MODEM_FREQUENCY_CLEAR"]}",
+      "last_time": "${ERROR_TIMES["MODEM_FREQUENCY_CLEAR_LAST_TIME"]}"
+    }
+  }
+}
+EOF
+    sync -f $save
+    mv $save $STATE_JSON_PATH
+    STATE_DIRTY=false
+}
+
+# plus count of error type with last time
+# $1: error type
+# $2: success or not
+record_error() {
+    local error_type="$1"
+    local success="$2"
+
+    if [ -n "$success" ] && $success; then
+        ERROR_COUNTS["$error_type"_SUCCESS]=$((ERROR_COUNTS["$error_type"_SUCCESS] + 1))
+        ERROR_TIMES["$error_type"_LAST_TIME_SUCCESS]=${ERROR_TIMES["$error_type"_LAST_TIME]}
+    else
+        ERROR_COUNTS["$error_type"]=$((ERROR_COUNTS["$error_type"] + 1))
+        ERROR_TIMES["$error_type"_LAST_TIME]="$(get_utc_date)"
+    fi
+    STATE_DIRTY=true
+}
+
+# $1: interval to check
+# $2: timeout of wait
+# $*: command of wait
+# return 0 if success, 1 if timeout
+wait_for() {
+    if [ $# -lt 3 ]; then
+        echo "wait_for: missing arguments"
+        return 1
+    fi
+    local interval="$1"
+    local timeout="$2"
+    shift 2
+    local count=0
+    while [ $count -lt "$timeout" ]; do
+        if "$@"; then
+            return 0
+        fi
+        sleep "$interval"
+        count=$((count + interval))
+    done
+    return 1
+}
 
 # log message to file with date prefix
 log_to_file() {
     if [ "$PERSISTENT_LOGGING" != y ]; then
         return
     fi
-    if [ -z "$MAX_LOG_SIZE" ] || [ $MAX_LOG_SIZE -eq 0 ]; then
+    if [ -z "$MAX_LOG_SIZE" ] || [ "$MAX_LOG_SIZE" -eq 0 ]; then
         return
     fi
     # return if no permission
     touch $LOG_FILE_PATH &>/dev/null || return
-    echo "$(date '+%Y-%m-%d %H:%M:%S'): $*" >>$LOG_FILE_PATH
+    echo -e "$(date '+%Y-%m-%d %H:%M:%S'): $*" >>$LOG_FILE_PATH
 }
 
 # both output message to console and file
 tee_log() {
     while IFS='' read -r line; do
         if [ -n "$DEBUG" ]; then
-            echo "$line"
+            echo -e "$line"
         fi
 
         log_to_file "$line"
@@ -96,30 +338,33 @@ tee_log() {
 debug() {
     if [ "$DEBUG" = '0' ]; then
         # redirect to stderr to avoid capture of subshell output
-        echo "$*" >&2
+        echo -e "$*" >&2
     else
         log_to_file "$*"
     fi
 }
 
 update_status() {
-    if [ "$PERSISTENT_LOGGING" != y ]; then
-        return
-    fi
     local status="$1"
     if [ "$status" != "$CURRENT_STATUS" ]; then
         echo "status changed from $CURRENT_STATUS to $status"
         CURRENT_STATUS="$status"
-        mkdir -p "$(dirname $STATUS_FILE_PATH)"
-        echo -n "$*" >"$STATUS_FILE_PATH"
+        STATE_DIRTY=true
+    else
+        return
     fi
+    if [ "$PERSISTENT_LOGGING" != y ]; then
+        return
+    fi
+    mkdir -p "$(dirname $STATUS_FILE_PATH)" || return
+    echo -n "$*" >"$STATUS_FILE_PATH"
 }
 
 # if the log exceeds the max size, halve it
 truncate_log() {
     local log_size
-    if [ -f $LOG_FILE_PATH ]; then
-        if [ -z "$MAX_LOG_SIZE" ] || [ $MAX_LOG_SIZE -eq 0 ]; then
+    if [ -f "$LOG_FILE_PATH" ]; then
+        if [ -z "$MAX_LOG_SIZE" ] || [ "$MAX_LOG_SIZE" -eq 0 ]; then
             return
         fi
         sync "${LOG_FILE_PATH}"
@@ -129,12 +374,14 @@ truncate_log() {
             local line_num
             line_num=$(wc -l <$LOG_FILE_PATH)
             tail -n $((line_num / 2)) "${LOG_FILE_PATH}" >"${LOG_FILE_PATH}.save"
+            sync "${LOG_FILE_PATH}.save"
             mv "${LOG_FILE_PATH}.save" "${LOG_FILE_PATH}"
-            sync "${LOG_FILE_PATH}"
         fi
     fi
 }
 
+# run AT command directly to modem, log output to file
+# not dbus-send to avoid potential problems with the ModemManager
 at_log_through_usb() {
     local log_pid
     local usb_dev="/dev/ttyUSB3"
@@ -154,29 +401,45 @@ at_log_through_usb() {
     echo -e "AT+CSQ\r\n" >$usb_dev
 
     sleep 10
+    sync "${LOG_FILE_PATH}"
     kill $log_pid
     log_to_file "raw AT command result end"
 }
 
+# check whether 4G module usb bus is ready
+is_modem_usb_ready() {
+    lsusb | grep -q -i -e 'Quectel.*EC21'
+}
+
 # hardware reset 4G module
-hard_reset() {
+hard_reset_and_record() {
     if [ -e /sys/bus/platform/devices/misc-adv-gpio/minipcie_reset ]; then
+        record_error MODEM_HARD_RESET
         echo 1 >/sys/bus/platform/devices/misc-adv-gpio/minipcie_reset
+        sleep 0.5
+        # wait for modem usb available
+        if wait_for 5 300 is_modem_usb_ready; then
+            record_error MODEM_HARD_RESET true
+        fi
         sleep 5
-        return 0
+    else
+        record_error MODEM_HARD_RESET
+        # Valid time: 150ms -- 460 ms, If it is greater than 460ms, the module will enter the second reset
+        ./gpio 1 0
+        # sleep 200ms
+        sleep 0.2
+        ./gpio 1 1
+        sleep 0.5
+        # wait for modem usb available
+        if wait_for 5 300 is_modem_usb_ready; then
+            record_error MODEM_HARD_RESET true
+        fi
+        sleep 5
     fi
-    # Valid time: 150ms -- 460 ms, If it is greater than 460ms, the module will enter the second reset
-    ./gpio 1 0
-    # sleep 200ms
-    sleep 0.2
-    ./gpio 1 1
-    sleep 5
+
 }
 
-test_qmi() {
-    debug "$(./simple-tester-python /dev/cdc-wdm0 2>&1)"
-}
-
+# Call dbus stop a systemd service
 stop_service() {
     local service_name="$1"
     if ! [[ $service_name =~ \.service$ ]]; then
@@ -189,6 +452,7 @@ stop_service() {
     }
 }
 
+# Call dbus start a systemd service
 start_service() {
     local service_name="$1"
     if ! [[ $service_name =~ \.service$ ]]; then
@@ -216,56 +480,64 @@ restart_service() {
     }
 }
 
-# test dbus is working
-# try get active state of ModemManager.serivice by dbus
-test_dbus() {
-    debug "test dbus," "ModemManager State:" "$(dbus-send --system --type=method_call --print-reply=literal \
-        --dest=org.freedesktop.systemd1 /org/freedesktop/systemd1/unit/ModemManager_2eservice \
-        org.freedesktop.DBus.Properties.Get string:'org.freedesktop.systemd1.Unit' string:"ActiveState" | awk '{print $2}')"
+# check whether ModemManager service is active state
+is_modemmanager_active() {
+    dbus-send --print-reply --type=method_call --system --dest=org.freedesktop.systemd1 \
+        /org/freedesktop/systemd1/unit/ModemManager_2eservice org.freedesktop.DBus.Properties.Get \
+        string:"org.freedesktop.systemd1.Unit" string:"ActiveState" | grep -q 'active'
+}
+
+is_modemmanager_index_ready() {
+    local index
+    index=$(
+        dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
+            /org/freedesktop/ModemManager1 org.freedesktop.DBus.ObjectManager.GetManagedObjects |
+            grep -Eo '/org/freedesktop/ModemManager1/Modem/[0-9]+' |
+            sed -En 's|/org/freedesktop/ModemManager1/Modem/([0-9]+)|\1|p' 2>/dev/null | head -1
+    )
+    if [ $? -ne 0 ] || [ -z "$index" ]; then
+        return 1
+    fi
 }
 
 # do not run this in a subshell $() or backticks ``
 # because the modification of MODEM_INDEX will not be effective
 get_modem_index() {
-    local index check_count=0
-    # max times = 720x5=3600s=60min
-    local max_wait_count=720
-    # initial wait time = 36x5=180s=3min
-    local current_wait_count=36
-    while true; do
+    local index code
+    # whether ModemManager is restarting
+    local restarting=false
+
+    # max wait time 24*5=120 seconds
+    for check_count in {1..24}; do
+        if $restarting; then
+            restarting=false
+            if is_modemmanager_active; then
+                debug "ModemManager restart success"
+                record_error MM_RESTART true
+            else
+                debug "ModemManager restart failed"
+            fi
+        fi
         index=$(
             dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
                 /org/freedesktop/ModemManager1 org.freedesktop.DBus.ObjectManager.GetManagedObjects |
                 grep -Eo '/org/freedesktop/ModemManager1/Modem/[0-9]+' |
                 sed -En 's|/org/freedesktop/ModemManager1/Modem/([0-9]+)|\1|p' | head -1
         )
+        code=$?
         # retry if modem manager is not start or modem is not ready
-        if [ $? -ne 0 ] || [ -z "$index" ]; then
-            # 3 minutes can't get modem index restart ModemManager
-            if [ $check_count -gt $current_wait_count ]; then
+        if [ $code -ne 0 ] || [ -z "$index" ]; then
+            # every 10 times(50 seconds) restart ModemManager
+            if ((check_count % 10 == 0)); then
                 echo "get modem index timeout, will restart ModemManager"
-
-                # log by raw AT command
+                # do some log by raw AT command
                 at_log_through_usb
-                test_dbus
 
-                stop_service ModemManager
-                sleep 20
-                debug "now test qmi status:"
-                test_qmi
-                sleep 40
-                start_service ModemManager
-
-                check_count=0
-                # append wait 1 minute every failed
-                current_wait_count=$((current_wait_count + 12))
-                # but not exceed max
-                if [ $current_wait_count -gt $max_wait_count ]; then
-                    current_wait_count=$max_wait_count
-                fi
+                restart_service ModemManager
+                restarting=true
+                record_error MM_RESTART
             fi
             sleep 5
-            ((check_count++))
         else
             if [ "$MODEM_INDEX" != "$index" ]; then
                 debug "modem index changed from '$MODEM_INDEX' to '$index'"
@@ -274,17 +546,21 @@ get_modem_index() {
             return 0
         fi
     done
+    if [ $code -ne 0 ]; then
+        record_error MODEM_MANAGER_ERR
+        update_status "${NETWORK_STATUS["MODEM_MANAGER_ERR"]}"
+        return 1
+    fi
 }
 
 # Send AT command to modem and output result
 # Return 0 if send successfully
 # Timeout is (probably) 2 seconds
 # Also see https://www.freedesktop.org/software/ModemManager/api/latest/gdbus-org.freedesktop.ModemManager1.Modem.html#gdbus-method-org-freedesktop-ModemManager1-Modem.Command
+# use ModemManager Api but echo to /dev/ttyUSB2 directly to avoid device occupancy conflicts
 AT_send() {
     local at_command="$1"
     local at_result
-
-    # use ModemManager Api not echo to /dev/ttyUSB2 directly to avoid device occupancy conflicts
 
     # dbus-send:
     # if send: AT+QENG="SERVINGCELL"
@@ -296,6 +572,7 @@ AT_send() {
     )
 
     if [ $? -ne 0 ]; then
+        debug "AT command '$at_command' failed"
         return 1
     fi
 
@@ -305,7 +582,7 @@ AT_send() {
 
 # Get property of ModemManager
 get_property() {
-    get_modem_index
+    get_modem_index || return 1
     dbus-send --system --print-reply --type=method_call --dest=org.freedesktop.ModemManager1 \
         /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" \
         org.freedesktop.DBus.Properties.Get string:"org.freedesktop.ModemManager1.Modem" string:"$1"
@@ -315,7 +592,7 @@ get_property() {
 # MBNCFG="AutoSel",1
 check_mbn() {
     local result
-    get_modem_index
+    get_modem_index || return 1
     if ! result=$(AT_send 'AT+QMBNCFG="AutoSel"'); then
         return 1
     fi
@@ -325,7 +602,7 @@ check_mbn() {
 
 # AT+QMBNCFG="AutoSel",1
 set_mbn() {
-    get_modem_index
+    get_modem_index || return 1
     AT_send 'AT+QMBNCFG="AutoSel",1' &>/dev/null
 }
 
@@ -334,7 +611,7 @@ set_mbn() {
 # sim card
 check_sim_status() {
     local result
-    get_modem_index
+    get_modem_index || return 1
     if ! result=$(AT_send 'AT+CPIN?'); then
         return 2
     fi
@@ -352,11 +629,12 @@ check_sim_status() {
 # AT+CCID
 check_sim_ccid() {
     local result
-    get_modem_index
+    get_modem_index || return 1
     if ! result=$(AT_send 'AT+CCID'); then
         return 2
     fi
     debug "AT+CCID result:$result"
+    ICCID="$(echo "$result" | tail -1 | cut -d' ' -f2 | tr -d '\n')"
 
     # ERROR: 13: sim error
 
@@ -366,38 +644,37 @@ check_sim_ccid() {
 }
 
 # AT+CSQ
-# use the return value as signal quality
-# return 0 means get signal quality failed
+# echo signal quality if success
 get_signal_quality() {
     local result signal_quality
-    get_modem_index || return 0
+    get_modem_index || return 1
     if ! result=$(AT_send 'AT+CSQ'); then
-        return 0
+        return 1
     fi
     debug "AT+CSQ result:$result"
     signal_quality="$(echo "$result" | tail -1 | cut -d, -f1)"
     # not all numbers, wrong quality
     if [[ ! "$signal_quality" =~ ^[0-9]+$ ]]; then
-        return 0
+        return 1
     fi
-    return $signal_quality
+    GLOBAL_VAR="$signal_quality"
 }
 
 # get modem firmware revision like: EC21EUXGAR08A04M1G
 get_modem_firmware_revision() {
-    get_modem_index || return 0
+    get_modem_index || return 1
     local result
     if ! result=$(AT_send 'ATI'); then
-        return 0
+        return 1
     fi
     debug "ATI result:$result"
-    echo "$result" | tail -1 | cut -d' ' -f2 | tr -d '\n'
+    GLOBAL_VAR=$(echo "$result" | tail -1 | cut -d' ' -f2 | tr -d '\n')
 }
 
 # Network resident of 4G module
 check_registration() {
     local result
-    get_modem_index
+    get_modem_index || return 1
     # this will return empty string if no error
     # see https://github.com/freedesktop/ModemManager/blob/eae2e28577c53e8deaa25d46d6032d5132be6b58/src/mm-modem-helpers.c#L818
     if ! result=$(AT_send 'AT+CEREG?'); then
@@ -424,25 +701,36 @@ check_registration() {
 # AT+CGACT?
 # check data connection
 check_data_connection() {
-    get_modem_index || return 0
+    get_modem_index || return 1
     local result
     if ! result=$(AT_send 'AT+CGACT?'); then
-        return 0
+        return 1
     fi
     debug "AT+CGACT? result:$result"
 }
 
-# AT command restart 4G module
-at_restart_module() {
-    get_modem_index
-    AT_send 'AT+CFUN=1,1' &>/dev/null
-    # wait for modem restart
-    sleep 5
+detect_modem_type() {
+    if lsusb | grep -q -i -e 'Quectel.*EC21'; then
+        return 0
+    elif [ "$(lsusb | grep -c -e 'Bus 002')" -eq 2 ]; then # bus 2 has 2 devices but is not Quectel
+        update_status "${NETWORK_STATUS["MODEM_UNKNOWN"]}"
+        return 1
+    else # bus 2 only has a controller, no other node, mean modem is bricked
+        update_status "${NETWORK_STATUS["MODEM_BRICKED"]}"
+        return 1
+    fi
 }
 
-# ModemManager api reset 4G module
+# AT command restart 4G module
+at_restart_module() {
+    get_modem_index || return 1
+
+    AT_send 'AT+CFUN=1,1' &>/dev/null
+}
+
+# ModemManager dbus api reset 4G module
 restart_module() {
-    get_modem_index
+    get_modem_index || return 1
 
     dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
         /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.Reset
@@ -452,21 +740,45 @@ restart_module() {
     fi
 }
 
-# Airplane mode switch
-at_cfun01() {
-    get_modem_index
-    AT_send 'AT+CFUN=0' &>/dev/null
-    # wait for modem restart
-    sleep 3
-    AT_send 'AT+CFUN=1' &>/dev/null
-    # wait for modem restart
-    sleep 5
+# restart 4G module and record error
+# will wait for modem ready
+restart_module_and_record() {
+    if restart_module; then
+        record_error MODEM_SOFT_RESET
+        # wait for modem ready
+        if wait_for 5 300 is_modemmanager_index_ready; then
+            record_error MODEM_SOFT_RESET true
+        fi
+    fi
 }
 
 # Airplane mode switch
+# cfun0 disables the RF component and transceiver unit，while cfun1 does the opposite
+# The big difference between the AT+CFUN=0 state and AT+CFUN=1,1 state is that
+# in the AT+CFUN=1,1 one the module is completely off, including the AT interface.
+# In AT+CFUN=0 you still can communicate with the module.
+at_cfun01() {
+    get_modem_index || return 1
+    AT_send 'AT+CFUN=0' &>/dev/null
+    # wait for modem disables
+    sleep 3
+    AT_send 'AT+CFUN=1' &>/dev/null
+}
+
+at_cfun01_and_record() {
+    at_cfun01 || return 1
+    record_error MODEM_AIRPLANE_MODE_SWITCH
+    # wait for modem ready
+    if wait_for 5 300 is_modemmanager_index_ready; then
+        record_error MODEM_AIRPLANE_MODE_SWITCH true
+    fi
+}
+
+# FIXME: dbus api for airplane mode switch not work
+# Airplane mode switch by dbus
 # don't use, some steps not work
 cfun01() {
-    get_modem_index
+    get_modem_index || return 1
 
     # NetworkManager will re-enable modem is have connection set
     dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
@@ -494,14 +806,20 @@ cfun01() {
 
 # frequency clearing
 frequency_clear() {
-    get_modem_index
+    get_modem_index || return 1
+
     # clear 4G frequency
     AT_send 'AT+QNVFD="/nv/reg_files/modem/lte/rrc/csp/acq_db"' &>/dev/null
     # clear 2G frequency
     AT_send 'AT+QCFG="nwoptmz/acq",0' &>/dev/null
 }
 
-# check nerwork, timeout 5s
+frequency_clear_and_record() {
+    frequency_clear || return 1
+    record_error MODEM_FREQUENCY_CLEAR
+}
+
+# Check nerwork by ping internet, once, timeout 5s
 ping_network() {
     # ping return 0 if success
     # return 1 if packet loose
@@ -509,26 +827,19 @@ ping_network() {
     ping -I wwan0 -c1 -W 5 8.8.8.8 &>/dev/null
 }
 
-get_ip_info() {
-    ip address show dev wwan0
-}
-
-gather_info2log() {
-    # do a check for log
-    check_registration
-    check_data_connection
-    debug "$(get_ip_info)"
-}
-
 # entry of "mbn module"
 mbn_loop() {
-    while ! check_mbn; do
-        echo "mbn not set, set it"
-        set_mbn
-        restart_module
-        sleep 25
+    for _ in {1..5}; do
+        if ! check_mbn; then
+            echo "mbn not set, set it"
+            set_mbn
+            restart_module_and_record
+            sleep 25
+        else
+            echo 'mbn check complete'
+        fi
     done
-    echo 'mbn check complete'
+    return 1
 }
 
 # entry of "SIM card maintenance module"
@@ -547,21 +858,22 @@ sim_status_loop() {
         # 2 means dbus error, SIM not inserted
         if [ "$last_code" -eq 10 ] || [ "$last_code" -eq 2 ]; then
             echo "sim card communication exception"
-            update_status $STATUS_SIM_ERROR10
-            restart_module
+            update_status "${NETWORK_STATUS["SIM_ERROR10"]}"
+            record_error SIM_ERROR10
+            restart_module_and_record
             return 1
         fi
 
         if ! check_sim_ccid; then
-
-            update_status $STATUS_SIM_ERROR
+            update_status "${NETWORK_STATUS["SIM_ERROR"]}"
+            record_error SIM_ERROR
             if [ "$current_sim_frequency_clear_count" -ge 1 ]; then
                 echo "fatal error: sim card status is abnormal even after clearing frequancy data"
                 return 1
             else
                 if [ "$current_sim_error_count" -ge "$MAX_SIM_ERROR_COUNT" ]; then
                     echo "sim error count exceed $MAX_SIM_ERROR_COUNT, clear modem frequency data"
-                    frequency_clear
+                    frequency_clear_and_record
                     ((current_sim_frequency_clear_count++))
                 else
                     ((current_sim_error_count++))
@@ -570,15 +882,17 @@ sim_status_loop() {
 
                 # hard reset 4G module when can't connect network after 2th At reset 4G module.
                 if [ "$current_sim_error_count" -ge 3 ]; then
-                    hard_reset
+                    hard_reset_and_record
                 else
-                    restart_module
+                    restart_module_and_record
                 fi
             fi
         else
             echo "sim status no problem"
             return 0
         fi
+        truncate_log
+        save_state
     done
 }
 
@@ -616,6 +930,34 @@ humanize_interval() {
     fi
 }
 
+# update status for ping fail
+record_ping_fail_status() {
+    local signal_quality
+
+    get_signal_quality || return 1
+    signal_quality=$GLOBAL_VAR
+
+    if ! ip address show dev wwan0 | grep -E -q 'inet [0-9]{1,3}(\.[0-9]{1,3}){3}'; then
+        update_status "${NETWORK_STATUS["NETWORK_ERROR_NO_IP"]}"
+        record_error NETWORK_ERROR_NO_IP
+        echo "ping network error, no ip obtained"
+    elif [ "$signal_quality" = 99 ] || [ "$signal_quality" -lt 15 ]; then # signal quality is 99, means no signal, or less than 15, means signal is too weak
+        echo "ping network error, low signal quality: $signal_quality"
+        update_status "${NETWORK_STATUS["NETWORK_ERROR_LOW_SIGNAL"]}"
+        record_error NETWORK_ERROR_LOW_SIGNAL
+    else
+        update_status "${NETWORK_STATUS["NETWORK_ERROR"]}"
+        record_error NETWORK_ERROR
+        echo "ping network error, ip obtained"
+    fi
+}
+
+log_modem_info_for_network_error() {
+    check_registration
+    check_data_connection
+    debug "$(ip address show dev wwan0)"
+}
+
 #
 network_check_loop() {
     # Current ping check error times
@@ -633,25 +975,7 @@ network_check_loop() {
     while true; do
         debug "do ping network check"
         if ! ping_network; then
-            update_status $STATUS_NETWORK_ERROR
-            local signal_quality signal_quality_is_low
-            get_signal_quality
-            signal_quality=$?
-
-            # the return value of 'get_signal_quality' is the signal value
-            # if is 0, means get signal failed
-            if [ $signal_quality -ne 0 ]; then
-                # signal quality is 99, means no signal
-                # or less than 15, means signal is too weak
-                if [ "$signal_quality" = 99 ] || [ "$signal_quality" -lt 15 ]; then
-                    echo "low signal quality: $signal_quality"
-                    signal_quality_is_low=y
-                else
-                    log_to_file "ping network error, signal quality: $signal_quality"
-                fi
-            fi
-
-            gather_info2log
+            record_ping_fail_status
 
             if [ "$current_frequancy_clear_count" -ge 1 ]; then
                 # Frequency point fault is greater than or equal to 1, abnormal end
@@ -664,21 +988,28 @@ network_check_loop() {
 
                     ((current_frequancy_error_count++))
                     if [ "$current_frequancy_error_count" -ge "$CURRENT_MAX_FREQUENCY_ERROR_COUNT" ]; then
-                        echo "restart module count reach max:$CURRENT_MAX_FREQUENCY_ERROR_COUNT, clear modem frequancy data"
-                        frequency_clear
-                        ((current_frequancy_clear_count++))
 
+                        if [ "$CURRENT_STATUS" = "${NETWORK_STATUS["NETWORK_ERROR_LOW_SIGNAL"]}" ]; then
+                            echo "skip modem frequancy data clear due to low signal quality"
+                        else
+                            echo "restart module count reach max:$CURRENT_MAX_FREQUENCY_ERROR_COUNT, clear modem frequancy data"
+                            frequency_clear_and_record
+                        fi
+
+                        ((current_frequancy_clear_count++))
                         ((CURRENT_MAX_FREQUENCY_ERROR_COUNT++))
+
                         if [ "$CURRENT_MAX_FREQUENCY_ERROR_COUNT" -gt "$MAX_FREQUENCY_ERROR_COUNT_MAX" ]; then
                             CURRENT_MAX_FREQUENCY_ERROR_COUNT=$MAX_FREQUENCY_ERROR_COUNT_MAX
                         fi
                     fi
 
-                    echo "can't access network via cellular reach max:${MAX_PING_ERROR_COUNT_ARRAY[$current_interval_index]}, restart modem module"
-                    if [ "$signal_quality_is_low" = y ]; then
-                        echo "skip restart module due to low signal quality: $signal_quality"
+                    if [ "$CURRENT_STATUS" = "${NETWORK_STATUS["NETWORK_ERROR_LOW_SIGNAL"]}" ]; then
+                        echo "skip restart module due to low signal quality"
                     else
-                        restart_module
+                        echo "can't access network via cellular reach max:${MAX_PING_ERROR_COUNT_ARRAY[$current_interval_index]}, restart modem module"
+                        log_modem_info_for_network_error
+                        restart_module_and_record
                     fi
                     current_ping_error_count=0
 
@@ -692,7 +1023,7 @@ network_check_loop() {
                     # do cfun01 start from second time
                     if [ "$current_ping_error_count" -ge 2 ]; then
                         echo "do cfun01"
-                        at_cfun01
+                        at_cfun01_and_record
                     fi
                     current_sleep_interval=${PING_INTERVALS_ARRAY[$current_interval_index]}
                     echo "can't access network via cellular $current_ping_error_count times," \
@@ -704,58 +1035,72 @@ network_check_loop() {
             current_ping_error_count=0
             current_frequancy_error_count=0
             CURRENT_MAX_FREQUENCY_ERROR_COUNT=${MAX_FREQUENCY_ERROR_COUNT_MIN}
-            update_status $STATUS_OK
+            update_status "${NETWORK_STATUS["OK"]}"
             # use normal interval
             current_sleep_interval=${PING_INTERVAL_NORMAL}
             echo "cellular network no problem, will ping network again in $current_sleep_interval"
         fi
         truncate_log
+        save_state
         sleep "$current_sleep_interval"
     done
 }
 
+# check if is Advantech board and Quectel EC21 firmware
+# return 0 if match
+check_board() {
+    local board_name
+    if [ -e /proc/board ]; then
+        board_name=$(cat /proc/board)
+        if ! get_modem_firmware_revision; then
+            echo "can't get modem firmware revision"
+            return 1
+        fi
+        revision=$GLOBAL_VAR
+        debug "board name: $board_name, revision: $revision"
+        if [[ "$board_name" =~ ^(EBC-RS08|EBC-RS10) ]]; then
+            # current list:
+            # EC21EUXGAR08A06M1G EC21EUXGAR08A07M1G EC21EUXGAR08A04M1G
+            if [[ "$revision" =~ ^EC21EU ]]; then
+                return 0
+            else
+                echo "modem revision not match, current is '$revision'"
+                return 1
+            fi
+        else
+            echo "board name not match, current is '$board_name'"
+        fi
+    fi
+    return 1
+}
+
 # used for tested respective modules
-# four module:"main program module","mbn module","frequency maintenance module","SIM card maintenance module"
 jump_run() {
     local current_step=$1
     shift
     if [ -n "$JUMP" ] && [ "$JUMP" -eq "$current_step" ]; then
-        if [ "$current_step" -eq 0 ]; then
-            echo "jump to mbn check loop"
-        elif [ "$current_step" -eq 1 ]; then
-            echo "jump to sim status loop"
-        elif [ "$current_step" -eq 2 ]; then
-            echo "jump to network check loop"
-        fi
+        echo "jump to ${*}"
     fi
     if [ -z "$JUMP" ] || [ "$current_step" -ge "$JUMP" ]; then
-        "$@"
+        debug "run ${*}"
+        if "$@"; then
+            echo "success: ${*} done"
+        else
+            echo "error: ${*} failed"
+            return 1
+        fi
     fi
 }
 
-# process of switching between four modules:"main program module","mbn module","frequency maintenance module","SIM card maintenance module"
+# process of switching between four modules
 loop_once() {
-    get_modem_index
+    jump_run 0 detect_modem_type || return 1
+    jump_run 1 get_modem_index || return 1
+    jump_run 2 check_board || return 1
+    jump_run 3 mbn_loop || return 1
+    jump_run 4 sim_status_loop || return 1
+    jump_run 5 network_check_loop || return 1
 
-    debug 'start check mbn'
-    jump_run 0 mbn_loop || {
-        debug 'mbn failed'
-        return 1
-    }
-    debug 'check mbn success'
-    debug 'check sim status'
-    jump_run 1 sim_status_loop || {
-        debug 'check sim status failed'
-        return 1
-    }
-    debug 'check sim status success'
-
-    debug 'check network'
-    jump_run 2 network_check_loop || {
-        debug 'check network failed'
-        return 1
-    }
-    debug 'check network success'
 }
 
 # entry of "main program module"
@@ -766,9 +1111,11 @@ main_loop() {
         return 1
     fi
     debug 'loop start'
+    initial_state
 
     while true; do
         loop_once
+        save_state
 
         if [ -n "$JUMP" ]; then
             echo "stop loop because of step jump"
@@ -827,36 +1174,20 @@ leave() {
     log_to_file "cellular guard exited, exit code: $?"
 }
 
-check_board() {
-    local board_name
-    if [ -e /proc/board ]; then
-        board_name=$(cat /proc/board)
-        revision=$(get_modem_firmware_revision)
-        debug "board name: $board_name, revision: $revision"
-        if [[ "$board_name" =~ ^(EBC-RS08|EBC-RS10) ]]; then
-            # current list:
-            # EC21EUXGAR08A06M1G EC21EUXGAR08A07M1G EC21EUXGAR08A04M1G
-            if [[ "$revision" =~ ^EC21EU ]]; then
-                return 0
-            else
-                echo "modem revision not match, current is '$revision'"
-                return 1
-            fi
-        else
-            echo "board name not match, current is '$board_name'"
-        fi
-    fi
-    return 1
-}
-
 usage() {
     echo "Cellular guard script
     Usage: $0 [OPTIONS]
 
 OPTIONS:
     * -h,--help: Print this.
-    * -x,--debug [0|1]: 0: output current step, 1: set -x, output all script steps.
-    * -j,--jump <step>: Jump to step and exit. 0: mbn check; 1: sim status check; 2: network ping check.
+    * -x,--debug [0|1]: 0: output more details to console, 1: set -x, output all script steps to console.
+    * -j,--jump <step>: Jumps to the specified step and exits after completing a loop. 
+        0: detect modem type;
+        1: get modem index;
+        2: check board;
+        3: mbn check; 
+        4: sim status check; 
+        5: network ping check.
     * --at <command>: Send AT command, get output and exit.
     * --source: I only need sourcing functions, don't run main loop.
 "
@@ -866,7 +1197,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
     -j | --jump)
         JUMP=$2
-        if [[ ! $JUMP =~ ^[0-2]$ ]]; then
+        if [[ ! $JUMP =~ ^[0-5]$ ]]; then
             echo "error usage of jump."
             usage
             exit 1
@@ -891,7 +1222,7 @@ while [[ $# -gt 0 ]]; do
         exit $?
         ;;
     --source)
-        SOURCE_MODE=y
+        SOURCE_MODE=true
         ;;
     *)
         echo "Unknown option: $1"
@@ -904,7 +1235,7 @@ if [ "$DEBUG" = '1' ]; then
     set -x
 fi
 
-if [ "$SOURCE_MODE" != y ]; then
+if ! $SOURCE_MODE; then
     # Check if cellular guard is enabled through env variable.
     # If not, sleep for an hour (container does not exit that way)
     # This is mainly used so it does not run on mistake on wrong hardware
@@ -913,11 +1244,6 @@ if [ "$SOURCE_MODE" != y ]; then
         echo 'ENABLE_CELLULAR_GUARD is set to "n". Sleeping for an hour and doing nothing.'
         sleep 3600
     done
-
-    if ! check_board; then
-        echo "suspended due to not Advantech board"
-        sleep infinity
-    fi
 
     if [ "$PERSISTENT_LOGGING" = y ]; then
         # redirect log to file
@@ -937,7 +1263,8 @@ if [ "$SOURCE_MODE" != y ]; then
         exec &>/dev/null
     fi
 
-    echo "Cellular Guard: $(cat VERSION | tail -1)"
+    VERSION=$(tail -1 VERSION)
+    echo "Cellular Guard: $VERSION"
 
     print_time_settings
     if [ -z "$JUMP" ]; then
