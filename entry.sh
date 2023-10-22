@@ -79,7 +79,6 @@ declare -A ERROR_COUNTS=(
     ["MM_RESTART_SUCCESS"]=0
     ["MODEM_AIRPLANE_MODE_SWITCH"]=0
     ["MODEM_AIRPLANE_MODE_SWITCH_SUCCESS"]=0
-    ["MODEM_SOFT_RESET_SUCCESS"]=0
     ["MODEM_SOFT_RESET"]=0
     ["MODEM_SOFT_RESET_SUCCESS"]=0
     ["MODEM_HARD_RESET"]=0
@@ -280,7 +279,7 @@ save_state() {
   }
 }
 EOF
-    sync -f $save
+    sync $save
     mv $save $STATE_JSON_PATH
     STATE_DIRTY=false
 }
@@ -390,6 +389,7 @@ main_shell_leave() {
     save_state
     log_to_file "$LOG_FLUSH_FLAG"
     log_to_file "cellular guard exited, exit code: $?"
+    sync $LOG_FILE_PATH
 }
 
 log_shell_leave() {
@@ -409,7 +409,10 @@ update_status() {
         return
     fi
     mkdir -p "$(dirname $STATUS_FILE_PATH)" || return
-    echo -n "$*" >"$STATUS_FILE_PATH"
+    local save="$STATUS_FILE_PATH.save"
+    echo -n "$*" >"$save"
+    sync "$save"
+    mv "$save" "$STATUS_FILE_PATH"
 }
 
 # if the log exceeds the max size, halve it
@@ -422,12 +425,12 @@ truncate_log() {
         sync "${LOG_FILE_PATH}"
         log_size=$(du -Lks ${LOG_FILE_PATH} | awk '{print $1}')
         if [ "$log_size" -gt "$MAX_LOG_SIZE" ]; then
-            log_to_file "truncate log"
             local line_num
             line_num=$(wc -l <$LOG_FILE_PATH)
             tail -n $((line_num / 2)) "${LOG_FILE_PATH}" >"${LOG_FILE_PATH}.save"
             sync "${LOG_FILE_PATH}.save"
             mv "${LOG_FILE_PATH}.save" "${LOG_FILE_PATH}"
+            log_to_file "truncate log to $((line_num / 2))KB"
         fi
     fi
 }
@@ -862,7 +865,6 @@ restart_module_and_record() {
 # The big difference between the AT+CFUN=0 state and AT+CFUN=1,1 state is that
 # in the AT+CFUN=1,1 one the module is completely off, including the AT interface.
 # In AT+CFUN=0 you still can communicate with the module.
-
 at_cfun01() {
     get_modem_index || return 1
     record_error MODEM_AIRPLANE_MODE_SWITCH
