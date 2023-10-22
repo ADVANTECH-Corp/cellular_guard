@@ -342,15 +342,15 @@ log_to_file() {
             LAST_LOG_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
             return
         else
-            echo -e "Suppressed $LAST_SAME_LOG_COUNT identical logs, most recent at $LAST_LOG_TIME" >>$LOG_FILE_PATH
+            echo -e "Suppressed $LAST_SAME_LOG_COUNT identical logs: '$LAST_LOG_CONTENT', most recent at $LAST_LOG_TIME" >>$LOG_FILE_PATH
             LAST_SAME_LOG_COUNT=0
             return
         fi
     elif [ "$LAST_SAME_LOG_COUNT" -gt 0 ]; then
-        echo -e "Suppressed $LAST_SAME_LOG_COUNT identical logs, most recent at $LAST_LOG_TIME" >>$LOG_FILE_PATH
+        echo -e "Suppressed $LAST_SAME_LOG_COUNT identical logs: '$LAST_LOG_CONTENT', most recent at $LAST_LOG_TIME" >>$LOG_FILE_PATH
         LAST_SAME_LOG_COUNT=0
     fi
-    
+
     # not log flush flag
     if [ "$*" = "$LOG_FLUSH_FLAG" ]; then
         return
@@ -865,6 +865,7 @@ restart_module_and_record() {
 # The big difference between the AT+CFUN=0 state and AT+CFUN=1,1 state is that
 # in the AT+CFUN=1,1 one the module is completely off, including the AT interface.
 # In AT+CFUN=0 you still can communicate with the module.
+# WARNING: Do not use this function, will cause ModemManager stuck
 at_cfun01() {
     get_modem_index || return 1
     record_error MODEM_AIRPLANE_MODE_SWITCH
@@ -966,6 +967,64 @@ ping_network() {
     # return 1 if packet loose
     # return 2 if error
     ping -I wwan0 -c1 -W 5 8.8.8.8 &>/dev/null
+}
+
+# Check if is Advantech board and Quectel EC21 firmware
+# Return 0 if match
+check_board() {
+    local board_name
+    if [ -e /proc/board ]; then
+        board_name=$(cat /proc/board)
+        if ! get_modem_firmware_revision; then
+            echo "can't get modem firmware revision"
+            return 2
+        fi
+        revision=$GLOBAL_VAR
+        debug "board name: $board_name, revision: $revision"
+        if [[ "$board_name" =~ ^(EBC-RS08|EBC-RS10) ]]; then
+            # current list:
+            # EC21EUXGAR08A06M1G EC21EUXGAR08A07M1G EC21EUXGAR08A04M1G
+            if [[ "$revision" =~ ^EC21EU ]]; then
+                return 0
+            else
+                echo "modem revision not match, current is '$revision'"
+            fi
+        else
+            echo "board name not match, current is '$board_name'"
+        fi
+    fi
+    return 1
+}
+
+detect_modem_type_loop() {
+    local code
+    for _ in {1..5}; do
+        if detect_modem_type; then
+            return 0
+        fi
+        sleep 10
+    done
+    return 1
+}
+
+check_board_loop() {
+    for i in {1..5}; do
+        check_board
+        code=$?
+        if [ $code -eq 0 ]; then
+            return 0
+        elif [ $code -eq 1 ]; then
+            # not match, do nothing
+            return 1
+        elif [ $i -ge 3 ]; then # get firmware revision failed third time
+            restart_module_and_record || {
+                echo "restart module at check board loop failed"
+                return 1
+            }
+            sleep 30
+        fi
+    done
+    return 1
 }
 
 # Entry of "mbn module"
@@ -1183,11 +1242,11 @@ network_check_loop() {
                     current_sleep_interval=${PING_INTERVALS_ARRAY[$current_interval_index]}
                     echo "will ping again in$(humanize_interval "$current_sleep_interval")"
                 else
-                    # do cfun01 start from second time
+                    # do cfun01(airplane mode switch) start from second time
                     if [ "$current_ping_error_count" -ge 2 ]; then
-                        echo "do cfun01"
+                        echo "do airplane mode switch"
                         cfun01_and_record || {
-                            echo "cfun01 failed"
+                            echo "airplane mode switch failed"
                             return 1
                         }
                     fi
@@ -1212,34 +1271,6 @@ network_check_loop() {
     done
 }
 
-# Check if is Advantech board and Quectel EC21 firmware
-# Return 0 if match
-check_board() {
-    local board_name
-    if [ -e /proc/board ]; then
-        board_name=$(cat /proc/board)
-        if ! get_modem_firmware_revision; then
-            echo "can't get modem firmware revision"
-            return 1
-        fi
-        revision=$GLOBAL_VAR
-        debug "board name: $board_name, revision: $revision"
-        if [[ "$board_name" =~ ^(EBC-RS08|EBC-RS10) ]]; then
-            # current list:
-            # EC21EUXGAR08A06M1G EC21EUXGAR08A07M1G EC21EUXGAR08A04M1G
-            if [[ "$revision" =~ ^EC21EU ]]; then
-                return 0
-            else
-                echo "modem revision not match, current is '$revision'"
-                return 1
-            fi
-        else
-            echo "board name not match, current is '$board_name'"
-        fi
-    fi
-    return 1
-}
-
 # Used for tested respective modules
 jump_run() {
     local current_step=$1
@@ -1260,9 +1291,9 @@ jump_run() {
 
 # Process of switching between four modules
 loop_once() {
-    jump_run 0 detect_modem_type || return 1
+    jump_run 0 detect_modem_type_loop || return 1
     jump_run 1 get_modem_index || return 1
-    jump_run 2 check_board || return 1
+    jump_run 2 check_board_loop || return 1
     jump_run 3 mbn_loop || return 1
     jump_run 4 sim_status_loop || return 1
     jump_run 5 network_check_loop || return 1
