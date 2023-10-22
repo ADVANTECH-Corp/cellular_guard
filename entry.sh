@@ -6,7 +6,7 @@
 # Author: Hong.Guo, hong.guo@advantech.com.cn
 #
 
-# a script to monitor modem state and auto restore by reset modem
+# A script to monitor modem state and auto restore by reset modem
 #
 
 # VSCode plugin shellcheck options
@@ -14,24 +14,25 @@
 # shellcheck disable=SC2181
 
 set -o pipefail
-trap 'leave' EXIT
+trap 'main_shell_leave' EXIT
 
 #  ---------- global variables begin ------------
 
 declare -r STATUS_FILE_PATH='/mnt/data/cellular_guard/status'
 declare -r LOG_FILE_PATH='/mnt/data/cellular_guard/cellular_guard.log'
 declare -r STATE_JSON_PATH='/mnt/data/cellular_guard/state.json'
+declare -r LOG_FLUSH_FLAG='^^^^^^FLUSH^^^^^^'
 
-# log to file
+# Log to file
 PERSISTENT_LOGGING=${PERSISTENT_LOGGING:-y}
-# max log file size, unit KiB
+# Max log file size, unit KiB
 MAX_LOG_SIZE=${MAX_LOG_SIZE:-100}
 
 # Used for delay time of "main program module" loop
 CHECK_INTERVAL=${CHECK_INTERVAL:-1h}
 
-# the interval of ping error is: 60x(4-1)=3 minutes, 600x(4-1)=30 minutes, 600x(4-1)=30 minutes, 3600x(4-1)=3 hours
-# ping gradient interval time
+# The interval of ping error is: 60x(4-1)=3 minutes, 600x(4-1)=30 minutes, 600x(4-1)=30 minutes, 3600x(4-1)=3 hours
+# Ping gradient interval time
 PING_INTERVALS=${PING_INTERVALS:-'60 600 600 3600'}
 IFS=" " read -r -a PING_INTERVALS_ARRAY <<<"$PING_INTERVALS"
 # Used for Record the number of network check failures in "frequency maintenance module"
@@ -49,9 +50,9 @@ MAX_FREQUENCY_ERROR_COUNT_MAX=${MAX_FREQUENCY_ERROR_COUNT_MAX:-5}
 # Used for trigger 4G module frequency clearing of "SIM card maintenance module"
 MAX_SIM_ERROR_COUNT=${MAX_SIM_ERROR_COUNT:-4}
 
-# corrent num of modem manager
+# Corrent num of modem manager
 MODEM_INDEX=0
-# count of 4G frequency clearing of "frequency maintenance module"
+# Count of 4G frequency clearing of "frequency maintenance module"
 CURRENT_MAX_FREQUENCY_ERROR_COUNT=${MAX_FREQUENCY_ERROR_COUNT_MIN}
 
 declare -Ar NETWORK_STATUS=(
@@ -103,20 +104,30 @@ declare -A ERROR_TIMES=(
     ["MODEM_FREQUENCY_CLEAR_LAST_TIME"]=""
 )
 
-# current cellular network status, initial to ok
+# Current cellular network status, initial to ok
 CURRENT_STATUS=${NETWORK_STATUS['OK']}
-# iccid record
-# iccid will initialed from state.json and obtained by check_sim_ccid
+# ICCID record
+# ICCID will initialed from state.json and obtained by check_sim_ccid
 ICCID=
-# version record, get from VERSION file at script beginning
+# Version record, get from VERSION file at script beginning
 VERSION=
-# tempary global variable
-# use global variable to avoid subshell can't not modify global variable
+# Tempary global variable
+# Use global variable to avoid subshell can't not modify global variable
 GLOBAL_VAR=
-# dirty tag of state.json
+# Dirty tag of state.json
 STATE_DIRTY=false
-# whether should do a hard reset
+# Whether should do a hard reset
 HARD_RESET_REQUIRED=false
+
+# To reduce the number of logs with the same content
+# Log content of last time
+LAST_LOG_CONTENT=
+# The most recent time of the same log
+LAST_LOG_TIME=
+# The number of the same log
+LAST_SAME_LOG_COUNT=0
+# The max number of the same log
+MAX_SUPRESSED_LOGS_NUM=10
 
 # from script parameters, for debug only
 JUMP=
@@ -324,11 +335,36 @@ log_to_file() {
     fi
     # return if no permission
     touch $LOG_FILE_PATH &>/dev/null || return
-    echo -e "$(date '+%Y-%m-%d %H:%M:%S'): $*" >>$LOG_FILE_PATH
+
+    # reduce the number of logs with the same content
+    if [ "$*" = "$LAST_LOG_CONTENT" ]; then
+        if [ "$LAST_SAME_LOG_COUNT" -lt "$MAX_SUPRESSED_LOGS_NUM" ]; then
+            ((LAST_SAME_LOG_COUNT++))
+            LAST_LOG_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
+            return
+        else
+            echo -e "Suppressed $LAST_SAME_LOG_COUNT identical logs, most recent at $LAST_LOG_TIME" >>$LOG_FILE_PATH
+            LAST_SAME_LOG_COUNT=0
+            return
+        fi
+    elif [ "$LAST_SAME_LOG_COUNT" -gt 0 ]; then
+        echo -e "Suppressed $LAST_SAME_LOG_COUNT identical logs, most recent at $LAST_LOG_TIME" >>$LOG_FILE_PATH
+        LAST_SAME_LOG_COUNT=0
+    fi
+    
+    # not log flush flag
+    if [ "$*" = "$LOG_FLUSH_FLAG" ]; then
+        return
+    fi
+
+    LAST_LOG_CONTENT="$*"
+    echo -e "$(date '+%Y-%m-%d %H:%M:%S'): $LAST_LOG_CONTENT" >>$LOG_FILE_PATH
 }
 
 # both output message to console and file
 tee_log() {
+    trap 'log_shell_leave' EXIT
+
     while IFS='' read -r line; do
         if [ -n "$DEBUG" ]; then
             echo -e "$line"
@@ -347,6 +383,17 @@ debug() {
     else
         log_to_file "$*"
     fi
+}
+
+# Log of exit
+main_shell_leave() {
+    save_state
+    log_to_file "$LOG_FLUSH_FLAG"
+    log_to_file "cellular guard exited, exit code: $?"
+}
+
+log_shell_leave() {
+    log_to_file "$LOG_FLUSH_FLAG"
 }
 
 update_status() {
@@ -402,7 +449,7 @@ at_log_through_usb() {
     echo -en "AT+CPIN?\r\n" >$usb_dev
     echo -en "AT+CCID\r\n" >$usb_dev
     echo -en "ATI\r\n" >$usb_dev
-    
+
     # registration status
     echo -en "AT+CEREG?\r\n" >$usb_dev
     echo -en "AT+QENG=\"SERVINGCELL\"\r\n" >$usb_dev
@@ -829,7 +876,7 @@ at_cfun01() {
     sleep 3
     # wait for modem ready
     get_modem_index || return 1
-    
+
     # FIXME: ModemManager will automatically enable modem after AT+CFUN=0,
     # will cause "org.freedesktop.ModemManager1.Error.Core.Cancelled: AT command was cancelled" when do AT+CFUN=1
     # and MODEM_INDEX will plus 2
@@ -852,10 +899,10 @@ at_cfun01_and_record() {
 
 # dbus api for airplane mode switch
 # Airplane mode switch by dbus
-# FIXME: some steps not work for EC21, SetPowerState
+# some steps not work for EC21
 cfun01() {
     get_modem_index || return 1
-    
+
     record_error MODEM_AIRPLANE_MODE_SWITCH
 
     # NetworkManager will re-enable modem is have connection set
@@ -864,7 +911,7 @@ cfun01() {
         boolean:false || return 1
 
     # set power state to MM_MODEM_POWER_STATE_OFF
-    # EC21 not supported set power state
+    # FIXME: EC21 not supported set power state
     # dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
     #     /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.SetPowerState \
     #     uint32:1
@@ -951,7 +998,6 @@ sim_status_loop() {
     local last_code
 
     while true; do
-        debug 'do sim status check'
         check_sim_status
         last_code=$?
         # 10 means no sim
@@ -1083,7 +1129,6 @@ network_check_loop() {
     local current_sleep_interval
 
     while true; do
-        debug "do ping network check"
         if ! ping_network; then
             record_ping_fail_status
 
@@ -1301,12 +1346,6 @@ print_time_settings() {
 "
     # Block for some time to flush the log file
     sleep 0.5
-}
-
-# Log of exit
-leave() {
-    save_state
-    log_to_file "cellular guard exited, exit code: $?"
 }
 
 usage() {
