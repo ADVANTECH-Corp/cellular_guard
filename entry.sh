@@ -17,10 +17,10 @@ set -o pipefail
 trap 'main_shell_leave' EXIT
 
 #  ---------- global variables begin ------------
-
-declare -r STATUS_FILE_PATH='/mnt/data/cellular_guard/status'
-declare -r LOG_FILE_PATH='/mnt/data/cellular_guard/cellular_guard.log'
-declare -r STATE_JSON_PATH='/mnt/data/cellular_guard/state.json'
+declare -r CG_BASE_DATA_DIR='/mnt/data/cellular_guard'
+declare -r STATUS_FILE_PATH="${CG_BASE_DATA_DIR}/status"
+declare -r LOG_FILE_PATH="${CG_BASE_DATA_DIR}/cellular_guard.log"
+declare -r STATE_JSON_PATH="${CG_BASE_DATA_DIR}/state.json"
 declare -r LOG_FLUSH_FLAG='^^^^^^FLUSH^^^^^^'
 
 # Log to file
@@ -430,7 +430,8 @@ truncate_log() {
             tail -n $((line_num / 2)) "${LOG_FILE_PATH}" >"${LOG_FILE_PATH}.save"
             sync "${LOG_FILE_PATH}.save"
             mv "${LOG_FILE_PATH}.save" "${LOG_FILE_PATH}"
-            log_to_file "truncate log to $((line_num / 2))KB"
+            log_size=$(du -Lks ${LOG_FILE_PATH} | awk '{print $1}')
+            log_to_file "truncate log to $((line_num / 2)) lines, ${log_size}KB"
         fi
     fi
 }
@@ -650,7 +651,7 @@ AT_send() {
 
     if [ $? -ne 0 ]; then
         debug "AT command '$at_command' failed: $at_result"
-        # When the ModemManager log shows a large number of "[modem0] Unable to enable interface: 'Invalid conversion'".
+        # When the ModemManager log shows a large number of "[modem0] couldn't enable interface: 'Invalid transition'".
         if grep -q -i 'operation not permitted' <<<"$at_result"; then
             HARD_RESET_REQUIRED=true
         fi
@@ -1263,7 +1264,7 @@ network_check_loop() {
             update_status "${NETWORK_STATUS["OK"]}"
             # use normal interval
             current_sleep_interval=${PING_INTERVAL_NORMAL}
-            echo "ok, will ping again in $current_sleep_interval"
+            echo "ok, will ping again in$(humanize_interval "$current_sleep_interval")"
         fi
         truncate_log
         save_state
