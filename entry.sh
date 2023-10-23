@@ -967,7 +967,11 @@ ping_network() {
     # ping return 0 if success
     # return 1 if packet loose
     # return 2 if error
-    ping -I wwan0 -c1 -W 5 8.8.8.8 &>/dev/null
+    ping -I wwan0 -c1 -W 5 8.8.8.8 &>/dev/null || {
+        # try again to avoid the network fluctuation factor
+        sleep 1
+        ping -I wwan0 -c1 -W 5 8.8.8.8 &>/dev/null
+    }
 }
 
 # Check if is Advantech board and Quectel EC21 firmware
