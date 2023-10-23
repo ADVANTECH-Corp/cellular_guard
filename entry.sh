@@ -197,10 +197,10 @@ initial_state() {
             return 1
         }
         eval "$state_init_script" || {
-            echo "eval init script error: $(sed 's/^[ \t]*//;s/[ \t]*$//' <<<"$state_init_script")"
+            echo -e "eval init script error: \n$(sed 's/^[ \t]*//;s/[ \t]*$//;/^$/d' <<<"$state_init_script")"
             return 1
         }
-        debug "state init from state.json, initial content: $(sed 's/^[ \t]*//;s/[ \t]*$//' <<<"$state_init_script")"
+        debug "state init from state.json, initial content: \n$(sed 's/^[ \t]*//;s/[ \t]*$//;/^$/d' <<<"$state_init_script")"
     fi
 }
 
@@ -1137,6 +1137,10 @@ humanize_unit() {
 humanize_interval() {
     local seconds=$1
     if [ -z "$seconds" ]; then
+        return
+    fi
+    if ! grep -q -E '^[0-9]+$' <<<"$seconds"; then
+        echo " $seconds"
         return
     fi
     if [ "$seconds" -ge 3600 ]; then

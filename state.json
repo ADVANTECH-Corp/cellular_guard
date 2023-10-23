@@ -27,35 +27,35 @@
     "modem_hard_reset": {
       "count": "0",
       "count_success": "0",
-      "last_time": "2023-10-18T07:45:05Z",
-      "last_time_success": "2023-10-18T07:45:05Z"
+      "last_time": "",
+      "last_time_success": ""
     },
     "sim_error10": {
       "count": "0",
-      "last_time": "2023-10-18T07:45:05Z"
+      "last_time": ""
     },
     "sim_error": {
       "count": "0",
-      "last_time": "2023-10-18T07:45:05Z"
+      "last_time": ""
     },
     "network_error_no_ip": {
       "count": "0",
-      "last_time": "2023-10-18T07:45:05Z"
+      "last_time": ""
     },
     "network_error_low_signal": {
       "count": "0",
-      "last_time": "2023-10-18T07:45:05Z"
+      "last_time": ""
     },
     "network_error": {
-      "count": "0",
+      "count": "1",
       "last_time": "2023-10-18T07:45:05Z"
     },
     "modem_manager_err": {
-      "count": "0",
+      "count": "2",
       "last_time": "2023-10-18T07:45:05Z"
     },
     "modem_frequency_clear": {
-      "count": "0",
+      "count": "3",
       "last_time": "2023-10-18T07:45:05Z"
     }
   }
