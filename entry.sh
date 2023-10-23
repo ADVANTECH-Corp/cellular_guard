@@ -21,6 +21,7 @@ declare -r CG_BASE_DATA_DIR='/mnt/data/cellular_guard'
 declare -r STATUS_FILE_PATH="${CG_BASE_DATA_DIR}/status"
 declare -r LOG_FILE_PATH="${CG_BASE_DATA_DIR}/cellular_guard.log"
 declare -r STATE_JSON_PATH="${CG_BASE_DATA_DIR}/state.json"
+declare -r HARD_RESET_REQUIRED_FILE="${CG_BASE_DATA_DIR}/hard_reset_required"
 declare -r LOG_FLUSH_FLAG='^^^^^^FLUSH^^^^^^'
 
 # Log to file
@@ -115,8 +116,6 @@ VERSION=
 GLOBAL_VAR=
 # Dirty tag of state.json
 STATE_DIRTY=false
-# Whether should do a hard reset
-HARD_RESET_REQUIRED=false
 
 # To reduce the number of logs with the same content
 # Log content of last time
@@ -653,7 +652,7 @@ AT_send() {
         debug "AT command '$at_command' failed: $at_result"
         # When the ModemManager log shows a large number of "[modem0] couldn't enable interface: 'Invalid transition'".
         if grep -q -i 'operation not permitted' <<<"$at_result"; then
-            HARD_RESET_REQUIRED=true
+            touch $HARD_RESET_REQUIRED_FILE
         fi
         return 1
     fi
@@ -1325,8 +1324,8 @@ main_loop() {
             break
         fi
 
-        if $HARD_RESET_REQUIRED; then
-            HARD_RESET_REQUIRED=false
+        if [ -e $HARD_RESET_REQUIRED_FILE ]; then
+            rm $HARD_RESET_REQUIRED_FILE
             echo "hard reset required"
             hard_reset_and_record || {
                 echo "hard reset failed"
