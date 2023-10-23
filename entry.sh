@@ -805,11 +805,13 @@ check_data_connection() {
 detect_modem_type() {
     if lsusb | grep -q -i -e 'Quectel.*EC21'; then
         return 0
-    elif [ "$(lsusb | grep -c -e 'Bus 002')" -eq 2 ]; then # bus 2 has 2 devices but is not Quectel
-        update_status "${NETWORK_STATUS["MODEM_UNKNOWN"]}"
-        return 1
-    else # bus 2 only has a controller, no other node, mean modem is bricked
+    elif [ "$(lsusb | grep -c -e 'Bus 002')" -eq 1 ] ||
+        lsusb | grep -q -i -e 'Qualcomm.*QHSUSB'; then
+        # bus 002 only has a controller, no other node, or Qualcomm.*QHSUSB found, mean modem is bricked
         update_status "${NETWORK_STATUS["MODEM_BRICKED"]}"
+        return 1
+    else # bus 002 has 2 devices but is not Quectel and not Qualcomm QHSUSB
+        update_status "${NETWORK_STATUS["MODEM_UNKNOWN"]}"
         return 1
     fi
 }
