@@ -27,7 +27,7 @@ declare -r LOG_FLUSH_FLAG='^^^^^^FLUSH^^^^^^'
 # Log to file
 PERSISTENT_LOGGING=${PERSISTENT_LOGGING:-y}
 # Max log file size, unit KiB
-MAX_LOG_SIZE=${MAX_LOG_SIZE:-100}
+MAX_LOG_SIZE=${MAX_LOG_SIZE:-3072}
 
 # Used for delay time of "main program module" loop
 CHECK_INTERVAL=${CHECK_INTERVAL:-1h}
