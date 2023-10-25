@@ -35,3 +35,5 @@ MAX_LOG_SIZE=3072
 # y/n to enable cellular guard
 # if n, will loop to sleep
 ENABLE_CELLULAR_GUARD=y
+
+VOLATILE_STATE_FILE_PATH='/run/state.json'

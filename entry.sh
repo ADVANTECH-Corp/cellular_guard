@@ -12,6 +12,7 @@
 # VSCode plugin shellcheck options
 # shellcheck disable=SC2182
 # shellcheck disable=SC2181
+# shellcheck disable=SC2269
 
 set -o pipefail
 trap 'main_shell_leave' EXIT
@@ -24,6 +25,7 @@ declare -r STATE_JSON_PATH="${CG_BASE_DATA_DIR}/state.json"
 declare -r HARD_RESET_REQUIRED_FILE="${CG_BASE_DATA_DIR}/hard_reset_required"
 declare -r LOG_FLUSH_FLAG='^^^^^^FLUSH^^^^^^'
 
+######### environment variables #########
 # Log to file
 PERSISTENT_LOGGING=${PERSISTENT_LOGGING:-y}
 # Max log file size, unit KiB
@@ -50,6 +52,11 @@ MAX_FREQUENCY_ERROR_COUNT_MAX=${MAX_FREQUENCY_ERROR_COUNT_MAX:-5}
 
 # Used for trigger 4G module frequency clearing of "SIM card maintenance module"
 MAX_SIM_ERROR_COUNT=${MAX_SIM_ERROR_COUNT:-4}
+
+# volatile state.json for export
+VOLATILE_STATE_FILE_PATH="${VOLATILE_STATE_FILE_PATH}"
+
+###################################################
 
 # Corrent num of modem manager
 MODEM_INDEX=0
@@ -131,6 +138,7 @@ MAX_SUPRESSED_LOGS_NUM=10
 JUMP=
 SOURCE_MODE=false
 DEBUG=
+HACK_SCRIPT=
 #  ---------- global variables end ------------
 
 initial_state() {
@@ -209,8 +217,11 @@ get_utc_date() {
 
 # check state changes and save it to state.json
 save_state() {
-    if ! $STATE_DIRTY; then
+    if ! $STATE_DIRTY && [ -f "$STATE_JSON_PATH" ]; then
         return
+    elif [ -n "$VOLATILE_STATE_FILE_PATH" ] && [ -f "$STATE_JSON_PATH" ] &&
+        [ ! -f "$VOLATILE_STATE_FILE_PATH" ]; then
+        cp -T "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH" &>/dev/null || true
     fi
     local save="$STATE_JSON_PATH.save"
     mkdir -p "$(dirname $save)"
@@ -280,6 +291,7 @@ save_state() {
 EOF
     sync $save
     mv $save $STATE_JSON_PATH
+    cp -T "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH" &>/dev/null || true
     STATE_DIRTY=false
 }
 
@@ -441,7 +453,7 @@ at_log_through_usb() {
     local log_pid
     local usb_dev="/dev/ttyUSB2"
     if [ ! -e $usb_dev ]; then
-        echo "can not find $usb_dev, maybe modem is bricked"
+        echo "can not find $usb_dev, maybe modem is bricked or is hard reseting"
         return 1
     fi
     log_to_file "now start to log raw AT command result"
@@ -1168,9 +1180,9 @@ record_ping_fail_status() {
         record_error NETWORK_ERROR_NO_IP
         echo "ping network error, no ip obtained"
     elif [ "$signal_quality" = 99 ] || [ "$signal_quality" -lt 15 ]; then # signal quality is 99, means no signal, or less than 15, means signal is too weak
-        echo "ping network error, low signal quality: $signal_quality"
         update_status "${NETWORK_STATUS["NETWORK_ERROR_LOW_SIGNAL"]}"
         record_error NETWORK_ERROR_LOW_SIGNAL
+        echo "ping network error, low signal quality: $signal_quality"
     else
         update_status "${NETWORK_STATUS["NETWORK_ERROR"]}"
         record_error NETWORK_ERROR
@@ -1406,7 +1418,8 @@ OPTIONS:
         4: sim status check; 
         5: network ping check.
     * --at <command>: Send AT command, get output and exit.
-    * --source: I only need sourcing functions, don't run main loop.
+    * --source: I only need sourcing functions, don't run main loop
+    * --hack <path>: extra script to do source hack.
 "
 }
 
@@ -1441,6 +1454,14 @@ while [[ $# -gt 0 ]]; do
     --source)
         SOURCE_MODE=true
         ;;
+    --hack)
+        HACK_SCRIPT="$2"
+        if [ ! -f "$HACK_SCRIPT" ]; then
+            echo "hack script not found: $HACK_SCRIPT"
+            exit 1
+        fi
+        shift
+        ;;
     *)
         echo "Unknown option: $1"
         ;;
@@ -1450,6 +1471,14 @@ done
 
 if [ "$DEBUG" = '1' ]; then
     set -x
+fi
+
+if [ -n "$HACK_SCRIPT" ] && [ -f "$HACK_SCRIPT" ]; then
+    # shellcheck disable=SC1090
+    source "$HACK_SCRIPT" || {
+        echo "source hack script failed"
+        exit 1
+    }
 fi
 
 VERSION=$(tail -1 VERSION)
