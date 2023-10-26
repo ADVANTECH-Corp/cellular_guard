@@ -2,7 +2,7 @@
 #
 # Created on Fri Sep 23 2022
 #
-# Copyright (C) 1983-2022 Advantech Co., Ltd.
+# Copyright (C) 1983-2023 Advantech Co., Ltd.
 # Author: Hong.Guo, hong.guo@advantech.com.cn
 #
 
@@ -217,11 +217,14 @@ get_utc_date() {
 
 # check state changes and save it to state.json
 save_state() {
-    if ! $STATE_DIRTY && [ -f "$STATE_JSON_PATH" ]; then
-        return
-    elif [ -n "$VOLATILE_STATE_FILE_PATH" ] && [ -f "$STATE_JSON_PATH" ] &&
-        [ ! -f "$VOLATILE_STATE_FILE_PATH" ]; then
-        cp -T "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH" &>/dev/null || true
+    if ! $STATE_DIRTY; then
+        if [ -n "$VOLATILE_STATE_FILE_PATH" ] && [ -f "$STATE_JSON_PATH" ] &&
+            [ ! -f "$VOLATILE_STATE_FILE_PATH" ]; then
+            cp -T "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH" &>/dev/null || true
+        fi
+        if [ -f "$STATE_JSON_PATH" ]; then
+            return
+        fi
     fi
     local save="$STATE_JSON_PATH.save"
     mkdir -p "$(dirname $save)"
@@ -291,7 +294,9 @@ save_state() {
 EOF
     sync $save
     mv $save $STATE_JSON_PATH
-    cp -T "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH" &>/dev/null || true
+    if [ -n "$VOLATILE_STATE_FILE_PATH" ]; then
+        cp -T "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH" &>/dev/null || true
+    fi
     STATE_DIRTY=false
 }
 
