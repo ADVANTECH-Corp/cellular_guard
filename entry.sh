@@ -112,7 +112,7 @@ declare -A ERROR_TIMES=(
 )
 
 # Current cellular network status, initial to ok
-CURRENT_STATUS=${NETWORK_STATUS['OK']}
+CURRENT_STATUS=
 # ICCID record
 # ICCID will initialed from state.json and obtained by check_sim_ccid
 ICCID=
@@ -142,6 +142,11 @@ HACK_SCRIPT=
 #  ---------- global variables end ------------
 
 initial_state() {
+    if [ -e "$STATUS_FILE_PATH" ];then
+        CURRENT_STATUS="$(cat "$STATUS_FILE_PATH")"
+    else
+        CURRENT_STATUS="${NETWORK_STATUS["OK"]}"
+    fi
     if [ -e $STATE_JSON_PATH ]; then
         local state_init_script
         state_init_script="$(jq -r '.ICCID as $iccid | .extra | @sh "
