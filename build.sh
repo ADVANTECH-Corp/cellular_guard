@@ -1,4 +1,7 @@
 #!/usr/bin/env sh
+# 
+# This script is for building a test cellular guard image in BalenaOS
+# 
 docker=docker
 if command -v balena >/dev/null 2>&1;then
 	docker=balena

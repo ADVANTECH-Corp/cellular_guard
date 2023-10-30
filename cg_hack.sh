@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# 
+# This script is designed to test cellular guard, using the --hack cg_hack.sh.
+# 
 
 CG_START_TIMESTAMP=$(date +%s)
 

@@ -17,6 +17,20 @@
 set -o pipefail
 trap 'main_shell_leave' EXIT
 
+# check path exists and do source
+# $1: path to be sourced
+extern_source() {
+    local path="$1"
+    if [ -n "$path" ] && [ -f "$path" ]; then
+        # shellcheck disable=SC1090
+        if source "$path"; then
+            echo "file '$path' sourced"
+        else
+            echo "source '$path' failed"
+        fi
+    fi
+}
+
 #  ---------- global variables begin ------------
 declare -r CG_BASE_DATA_DIR='/mnt/data/cellular_guard'
 declare -r STATUS_FILE_PATH="${CG_BASE_DATA_DIR}/status"
@@ -26,6 +40,11 @@ declare -r HARD_RESET_REQUIRED_FILE="${CG_BASE_DATA_DIR}/hard_reset_required"
 declare -r LOG_FLUSH_FLAG='^^^^^^FLUSH^^^^^^'
 
 ######### environment variables #########
+# file path to load env
+CG_ENV_FILE=${CG_ENV_FILE:-cellular_guard.env}
+
+extern_source "$CG_ENV_FILE"
+
 # Log to file
 PERSISTENT_LOGGING=${PERSISTENT_LOGGING:-y}
 # Max log file size, unit KiB
@@ -142,7 +161,7 @@ HACK_SCRIPT=
 #  ---------- global variables end ------------
 
 initial_state() {
-    if [ -e "$STATUS_FILE_PATH" ];then
+    if [ -e "$STATUS_FILE_PATH" ]; then
         CURRENT_STATUS="$(cat "$STATUS_FILE_PATH")"
     else
         CURRENT_STATUS="${NETWORK_STATUS["OK"]}"
@@ -1483,13 +1502,7 @@ if [ "$DEBUG" = '1' ]; then
     set -x
 fi
 
-if [ -n "$HACK_SCRIPT" ] && [ -f "$HACK_SCRIPT" ]; then
-    # shellcheck disable=SC1090
-    source "$HACK_SCRIPT" || {
-        echo "source hack script failed"
-        exit 1
-    }
-fi
+extern_source "$HACK_SCRIPT"
 
 VERSION=$(tail -1 VERSION)
 
