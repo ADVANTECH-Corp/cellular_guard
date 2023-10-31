@@ -17,18 +17,22 @@
 set -o pipefail
 trap 'main_shell_leave' EXIT
 
-# check path exists and do source
-# $1: path to be sourced
-extern_source() {
-    local path="$1"
-    if [ -n "$path" ] && [ -f "$path" ]; then
-        # shellcheck disable=SC1090
-        if source "$path"; then
-            echo "file '$path' sourced"
-        else
-            echo "source '$path' failed"
-        fi
+# parse env file
+# but prefer to use env variables
+parse_env() {
+    local env_file="$1"
+    if [ -z "$env_file" ] || [ ! -f "$env_file" ]; then
+        return 0
     fi
+    echo "parse env file: $env_file"
+    local key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        key=$(sed -En 's/^([0-9A-Z_]+)=.*$/\1/p' <<<"$line")
+        value=$(sed -En 's/^[0-9A-Z_]+=(.*)$/\1/p' <<<"$line")
+        if [ -z "${!key}" ]; then
+            eval "$key=$value"
+        fi
+    done < <(grep -E '^[0-9A-Z_]+=.*$' "$env_file")
 }
 
 #  ---------- global variables begin ------------
@@ -43,7 +47,7 @@ declare -r LOG_FLUSH_FLAG='^^^^^^FLUSH^^^^^^'
 # file path to load env
 CG_ENV_FILE=${CG_ENV_FILE:-cellular_guard.env}
 
-extern_source "$CG_ENV_FILE"
+parse_env "$CG_ENV_FILE"
 
 # Log to file
 PERSISTENT_LOGGING=${PERSISTENT_LOGGING:-y}
@@ -242,11 +246,12 @@ get_utc_date() {
 # check state changes and save it to state.json
 save_state() {
     if ! $STATE_DIRTY; then
-        if [ -n "$VOLATILE_STATE_FILE_PATH" ] && [ -f "$STATE_JSON_PATH" ] &&
-            [ ! -f "$VOLATILE_STATE_FILE_PATH" ]; then
-            cp -T "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH" &>/dev/null || true
-        fi
         if [ -f "$STATE_JSON_PATH" ]; then
+            if [ -n "$VOLATILE_STATE_FILE_PATH" ] &&
+                [ ! -f "$VOLATILE_STATE_FILE_PATH" ]; then
+                mkdir -p "$(dirname "$VOLATILE_STATE_FILE_PATH")"
+                cp -T "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH" &>/dev/null || true
+            fi
             return
         fi
     fi
@@ -319,6 +324,7 @@ EOF
     sync $save
     mv $save $STATE_JSON_PATH
     if [ -n "$VOLATILE_STATE_FILE_PATH" ]; then
+        mkdir -p "$(dirname "$VOLATILE_STATE_FILE_PATH")"
         cp -T "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH" &>/dev/null || true
     fi
     STATE_DIRTY=false
@@ -1378,6 +1384,20 @@ main_loop() {
         sleep "$CHECK_INTERVAL"
         truncate_log
     done
+}
+
+# check path exists and do source
+# $1: path to be sourced
+extern_source() {
+    local path="$1"
+    if [ -n "$path" ] && [ -f "$path" ]; then
+        # shellcheck disable=SC1090
+        if source "$path"; then
+            echo "file '$path' sourced"
+        else
+            echo "source '$path' failed"
+        fi
+    fi
 }
 
 # Setting print
