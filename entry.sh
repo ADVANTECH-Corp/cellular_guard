@@ -106,6 +106,7 @@ declare -A ERROR_COUNTS=(
     ["NETWORK_ERROR_LOW_SIGNAL"]=0
     ["MODEM_MANAGER_ERR"]=0
     ["MODEM_FREQUENCY_CLEAR"]=0
+    ["MODEM_FREQUENCY_CLEAR_SUCCESS"]=0
     ["MM_RESTART"]=0
     ["MM_RESTART_SUCCESS"]=0
     ["MODEM_AIRPLANE_MODE_SWITCH"]=0
@@ -132,6 +133,7 @@ declare -A ERROR_TIMES=(
     ["NETWORK_ERROR_LOW_SIGNAL_LAST_TIME"]=""
     ["MODEM_MANAGER_ERR_LAST_TIME"]=""
     ["MODEM_FREQUENCY_CLEAR_LAST_TIME"]=""
+    ["MODEM_FREQUENCY_CLEAR_LAST_TIME_SUCCESS"]=""
 )
 
 # Current cellular network status, initial to ok
@@ -161,7 +163,6 @@ MAX_SUPRESSED_LOGS_NUM=10
 JUMP=
 SOURCE_MODE=false
 DEBUG=
-HACK_SCRIPT=
 #  ---------- global variables end ------------
 
 initial_state() {
@@ -172,7 +173,7 @@ initial_state() {
     fi
     if [ -e $STATE_JSON_PATH ]; then
         local state_init_script
-        state_init_script="$(jq -r '.ICCID as $iccid | .extra | @sh "
+        state_init_script="$(jq -r '.ICCID as $iccid | .version as $version | .extra | @sh "
             # extra mm_restart
             ERROR_COUNTS[\"MM_RESTART\"]=\(.mm_restart.count // "0")
             ERROR_COUNTS[\"MM_RESTART_SUCCESS\"]=\(.mm_restart.count_success // "0")
@@ -223,10 +224,15 @@ initial_state() {
 
             # extra modem_frequency_clear
             ERROR_COUNTS[\"MODEM_FREQUENCY_CLEAR\"]=\(.modem_frequency_clear.count // "0")
+            ERROR_COUNTS[\"MODEM_FREQUENCY_CLEAR_SUCCESS\"]=\(.modem_frequency_clear.count_success // "0")
             ERROR_TIMES[\"MODEM_FREQUENCY_CLEAR_LAST_TIME\"]=\(.modem_frequency_clear.last_time // "")
+            ERROR_TIMES[\"MODEM_FREQUENCY_CLEAR_LAST_TIME_SUCCESS\"]=\(.modem_frequency_clear.last_time_success // "")
 
             # cached ICCID as initial value
             ICCID=\($iccid // "")
+            
+            # cached VERSION as initial value
+            VERSION=\($version // "")
          "' $STATE_JSON_PATH 2>&1)" || {
             echo "jq parse state.json error: $state_init_script"
             return 1
@@ -316,7 +322,9 @@ save_state() {
     },
     "modem_frequency_clear": {
       "count": "${ERROR_COUNTS["MODEM_FREQUENCY_CLEAR"]}",
-      "last_time": "${ERROR_TIMES["MODEM_FREQUENCY_CLEAR_LAST_TIME"]}"
+      "count_success": "${ERROR_COUNTS["MODEM_FREQUENCY_CLEAR_SUCCESS"]}",
+      "last_time": "${ERROR_TIMES["MODEM_FREQUENCY_CLEAR_LAST_TIME"]}",
+      "last_time_success": "${ERROR_TIMES["MODEM_FREQUENCY_CLEAR_LAST_TIME_SUCCESS"]}"
     }
   }
 }
@@ -434,6 +442,7 @@ debug() {
 main_shell_leave() {
     save_state
     log_to_file "$LOG_FLUSH_FLAG"
+    truncate_log
     log_to_file "cellular guard exited, exit code: $?"
     sync $LOG_FILE_PATH
 }
@@ -1008,6 +1017,7 @@ frequency_clear() {
 # Frequency clearing and record error
 frequency_clear_and_record() {
     frequency_clear || return 1
+    record_error MODEM_FREQUENCY_CLEAR true
 }
 
 # Check nerwork by ping internet, once, timeout 5s
@@ -1360,8 +1370,6 @@ loop_once() {
 main_loop() {
 
     debug 'loop start'
-    initial_state
-
     while true; do
         loop_once
         save_state
@@ -1397,6 +1405,22 @@ extern_source() {
         else
             echo "source '$path' failed"
         fi
+    fi
+}
+
+update_version() {
+    local version
+    version=$(tail -1 VERSION)
+    if [ "$VERSION" != "$version" ]; then
+        if [ -n "$VERSION" ]; then
+            echo "Cellular Guard updated to '$version'"
+        else
+            echo "Cellular Guard: $version"
+        fi
+        VERSION="$version"
+        STATE_DIRTY=true
+    else
+        echo "Cellular Guard: $VERSION"
     fi
 }
 
@@ -1504,10 +1528,10 @@ while [[ $# -gt 0 ]]; do
         SOURCE_MODE=true
         ;;
     --hack)
-        HACK_SCRIPT="$2"
-        if [ ! -f "$HACK_SCRIPT" ]; then
-            echo "hack script not found: $HACK_SCRIPT"
-            exit 1
+        if [ -f "$2" ]; then
+            extern_source "$2"
+        else
+            echo "hack script not found: $2"
         fi
         shift
         ;;
@@ -1522,30 +1546,31 @@ if [ "$DEBUG" = '1' ]; then
     set -x
 fi
 
-extern_source "$HACK_SCRIPT"
-
-VERSION=$(tail -1 VERSION)
-
-if [ "$PERSISTENT_LOGGING" = y ]; then
-    # redirect log to file
-    if mkdir -p "$(dirname $LOG_FILE_PATH)"; then
-        if [ "$DEBUG" = '1' ]; then
-            echo "no log to file in debug=1 mode"
+if ! $SOURCE_MODE; then
+    if [ "$PERSISTENT_LOGGING" = y ]; then
+        # redirect log to file
+        if mkdir -p "$(dirname $LOG_FILE_PATH)"; then
+            if [ "$DEBUG" = '1' ]; then
+                echo "no log to file in debug=1 mode"
+            else
+                echo "log to $LOG_FILE_PATH"
+                exec &> >(tee_log)
+            fi
         else
-            echo "log to $LOG_FILE_PATH"
-            exec &> >(tee_log)
+            echo "can't create log file path $(dirname $LOG_FILE_PATH), no output"
+            exec &>/dev/null
         fi
     else
-        echo "can't create log file path $(dirname $LOG_FILE_PATH), no output"
+        # silence output
         exec &>/dev/null
     fi
-else
-    # silence output
-    exec &>/dev/null
 fi
 
+initial_state
+update_version
+save_state
+
 if ! $SOURCE_MODE; then
-    echo "Cellular Guard: $VERSION"
 
     # Check if cellular guard is enabled through env variable.
     # If not, sleep for an hour (container does not exit that way)
