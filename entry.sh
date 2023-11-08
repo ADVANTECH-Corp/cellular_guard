@@ -36,12 +36,12 @@ parse_env() {
 }
 
 #  ---------- global variables begin ------------
-declare -r CG_BASE_DATA_DIR='/mnt/data/cellular_guard'
-declare -r STATUS_FILE_PATH="${CG_BASE_DATA_DIR}/status"
-declare -r LOG_FILE_PATH="${CG_BASE_DATA_DIR}/cellular_guard.log"
-declare -r STATE_JSON_PATH="${CG_BASE_DATA_DIR}/state.json"
-declare -r HARD_RESET_REQUIRED_FILE="${CG_BASE_DATA_DIR}/hard_reset_required"
-declare -r LOG_FLUSH_FLAG='^^^^^^FLUSH^^^^^^'
+declare -rg CG_BASE_DATA_DIR="${CG_BASE_DATA_DIR:-/mnt/data/cellular_guard}"
+declare -rg STATUS_FILE_PATH="${CG_BASE_DATA_DIR}/status"
+declare -rg LOG_FILE_PATH="${CG_BASE_DATA_DIR}/cellular_guard.log"
+declare -rg STATE_JSON_PATH="${CG_BASE_DATA_DIR}/state.json"
+declare -rg HARD_RESET_REQUIRED_FILE="${CG_BASE_DATA_DIR}/hard_reset_required"
+declare -rg LOG_FLUSH_FLAG='^^^^^^FLUSH^^^^^^'
 
 ######### environment variables #########
 # file path to load env
@@ -86,7 +86,7 @@ MODEM_INDEX=0
 # Count of 4G frequency clearing of "frequency maintenance module"
 CURRENT_MAX_FREQUENCY_ERROR_COUNT=${MAX_FREQUENCY_ERROR_COUNT_MIN}
 
-declare -Ar NETWORK_STATUS=(
+declare -Arg NETWORK_STATUS=(
     ["OK"]="ok"
     ["SIM_ERROR10"]="sim_error10"
     ["SIM_ERROR"]="sim_error"
@@ -98,7 +98,7 @@ declare -Ar NETWORK_STATUS=(
     ["MODEM_MANAGER_ERR"]="modem_manager_err"
 )
 
-declare -A ERROR_COUNTS=(
+declare -Ag ERROR_COUNTS=(
     ["SIM_ERROR10"]=0
     ["SIM_ERROR"]=0
     ["NETWORK_ERROR"]=0
@@ -117,7 +117,7 @@ declare -A ERROR_COUNTS=(
     ["MODEM_HARD_RESET_SUCCESS"]=0
 )
 
-declare -A ERROR_TIMES=(
+declare -Ag ERROR_TIMES=(
     ["MM_RESTART_LAST_TIME"]=""
     ["MM_RESTART_LAST_TIME_SUCCESS"]=""
     ["MODEM_AIRPLANE_MODE_SWITCH_LAST_TIME"]=""
@@ -158,6 +158,8 @@ LAST_LOG_TIME=
 LAST_SAME_LOG_COUNT=0
 # The max number of the same log
 MAX_SUPRESSED_LOGS_NUM=10
+# raw at command usb device path
+RAW_USB_DEV='/dev/ttyUSB2'
 
 # from script parameters, for debug only
 JUMP=
@@ -171,7 +173,7 @@ initial_state() {
     else
         CURRENT_STATUS="${NETWORK_STATUS["OK"]}"
     fi
-    if [ -e $STATE_JSON_PATH ]; then
+    if [ -e "$STATE_JSON_PATH" ]; then
         local state_init_script
         state_init_script="$(jq -r '.ICCID as $iccid | .version as $version | .extra | @sh "
             # extra mm_restart
@@ -233,7 +235,7 @@ initial_state() {
             
             # cached VERSION as initial value
             VERSION=\($version // "")
-         "' $STATE_JSON_PATH 2>&1)" || {
+         "' "$STATE_JSON_PATH" 2>&1)" || {
             echo "jq parse state.json error: $state_init_script"
             return 1
         }
@@ -251,19 +253,25 @@ get_utc_date() {
 
 # check state changes and save it to state.json
 save_state() {
-    if ! $STATE_DIRTY; then
-        if [ -f "$STATE_JSON_PATH" ]; then
-            if [ -n "$VOLATILE_STATE_FILE_PATH" ] &&
-                [ ! -f "$VOLATILE_STATE_FILE_PATH" ]; then
+    if ! $STATE_DIRTY && [ -f "$STATE_JSON_PATH" ]; then
+        if [ -n "$VOLATILE_STATE_FILE_PATH" ]; then
+            if [ -f "$VOLATILE_STATE_FILE_PATH" ]; then
+                local volatile_time json_time
+                volatile_time=$(stat -c '%Y' "$VOLATILE_STATE_FILE_PATH")
+                json_time=$(stat -c '%Y' "$STATE_JSON_PATH")
+                if [ "$volatile_time" -ne "$json_time" ]; then
+                    cp -T -p "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH"
+                fi
+            else
                 mkdir -p "$(dirname "$VOLATILE_STATE_FILE_PATH")"
-                cp -T "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH" &>/dev/null || true
+                cp -T -p "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH"
             fi
-            return
         fi
+        return
     fi
     local save="$STATE_JSON_PATH.save"
-    mkdir -p "$(dirname $save)"
-    cat >$save <<EOF
+    mkdir -p "$(dirname "$save")"
+    cat >"$save" <<EOF
 {
   "timestamp": "$(get_utc_date)",
   "balena_uuid": "$BALENA_DEVICE_UUID",
@@ -329,11 +337,11 @@ save_state() {
   }
 }
 EOF
-    sync $save
-    mv $save $STATE_JSON_PATH
+    sync "$save"
+    mv "$save" "$STATE_JSON_PATH"
     if [ -n "$VOLATILE_STATE_FILE_PATH" ]; then
         mkdir -p "$(dirname "$VOLATILE_STATE_FILE_PATH")"
-        cp -T "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH" &>/dev/null || true
+        cp -T -p "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH"
     fi
     STATE_DIRTY=false
 }
@@ -387,7 +395,7 @@ log_to_file() {
         return
     fi
     # return if no permission
-    touch $LOG_FILE_PATH &>/dev/null || return
+    touch "$LOG_FILE_PATH" &>/dev/null || return
 
     # reduce the number of logs with the same content
     if [ "$*" = "$LAST_LOG_CONTENT" ]; then
@@ -396,12 +404,12 @@ log_to_file() {
             LAST_LOG_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
             return
         else
-            echo -e "Suppressed $LAST_SAME_LOG_COUNT identical logs: '$LAST_LOG_CONTENT', most recent at $LAST_LOG_TIME" >>$LOG_FILE_PATH
+            echo -e "Suppressed $LAST_SAME_LOG_COUNT identical logs: '$LAST_LOG_CONTENT', most recent at $LAST_LOG_TIME" >>"$LOG_FILE_PATH"
             LAST_SAME_LOG_COUNT=0
             return
         fi
     elif [ "$LAST_SAME_LOG_COUNT" -gt 0 ]; then
-        echo -e "Suppressed $LAST_SAME_LOG_COUNT identical logs: '$LAST_LOG_CONTENT', most recent at $LAST_LOG_TIME" >>$LOG_FILE_PATH
+        echo -e "Suppressed $LAST_SAME_LOG_COUNT identical logs: '$LAST_LOG_CONTENT', most recent at $LAST_LOG_TIME" >>"$LOG_FILE_PATH"
         LAST_SAME_LOG_COUNT=0
     fi
 
@@ -411,7 +419,7 @@ log_to_file() {
     fi
 
     LAST_LOG_CONTENT="$*"
-    echo -e "$(date '+%Y-%m-%d %H:%M:%S'): $LAST_LOG_CONTENT" >>$LOG_FILE_PATH
+    echo -e "$(date '+%Y-%m-%d %H:%M:%S'): $LAST_LOG_CONTENT" >>"$LOG_FILE_PATH"
 }
 
 # both output message to console and file
@@ -444,7 +452,7 @@ main_shell_leave() {
     log_to_file "$LOG_FLUSH_FLAG"
     truncate_log
     log_to_file "cellular guard exited, exit code: $?"
-    sync $LOG_FILE_PATH
+    sync "$LOG_FILE_PATH"
 }
 
 log_shell_leave() {
@@ -458,12 +466,12 @@ update_status() {
         CURRENT_STATUS="$status"
         STATE_DIRTY=true
     else
-        return
+        return 0
     fi
     if [ "$PERSISTENT_LOGGING" != y ]; then
-        return
+        return 0
     fi
-    mkdir -p "$(dirname $STATUS_FILE_PATH)" || return
+    mkdir -p "$(dirname "$STATUS_FILE_PATH")" || return
     local save="$STATUS_FILE_PATH.save"
     echo -n "$*" >"$save"
     sync "$save"
@@ -475,17 +483,17 @@ truncate_log() {
     local log_size
     if [ -f "$LOG_FILE_PATH" ]; then
         if [ -z "$MAX_LOG_SIZE" ] || [ "$MAX_LOG_SIZE" -eq 0 ]; then
-            return
+            return 0
         fi
         sync "${LOG_FILE_PATH}"
-        log_size=$(du -Lks ${LOG_FILE_PATH} | awk '{print $1}')
+        log_size=$(du -Lks "${LOG_FILE_PATH}" | awk '{print $1}')
         if [ "$log_size" -gt "$MAX_LOG_SIZE" ]; then
             local line_num
-            line_num=$(wc -l <$LOG_FILE_PATH)
+            line_num=$(wc -l <"$LOG_FILE_PATH")
             tail -n $((line_num / 2)) "${LOG_FILE_PATH}" >"${LOG_FILE_PATH}.save"
             sync "${LOG_FILE_PATH}.save"
             mv "${LOG_FILE_PATH}.save" "${LOG_FILE_PATH}"
-            log_size=$(du -Lks ${LOG_FILE_PATH} | awk '{print $1}')
+            log_size=$(du -Lks "${LOG_FILE_PATH}" | awk '{print $1}')
             log_to_file "truncate log to $((line_num / 2)) lines, ${log_size}KB"
         fi
     fi
@@ -495,31 +503,30 @@ truncate_log() {
 # not dbus-send to avoid potential problems with the ModemManager
 at_log_through_usb() {
     local log_pid
-    local usb_dev="/dev/ttyUSB2"
-    if [ ! -e $usb_dev ]; then
-        echo "can not find $usb_dev, maybe modem is bricked or is hard reseting"
+    if [ ! -e $RAW_USB_DEV ]; then
+        echo "can not find $RAW_USB_DEV, maybe modem is bricked or is hard reseting"
         return 1
     fi
     log_to_file "now start to log raw AT command result"
-    cat $usb_dev >>"${LOG_FILE_PATH}" &
+    cat $RAW_USB_DEV >>"${LOG_FILE_PATH}" &
     log_pid=$!
 
     # sim card status
-    echo -en "AT+CPIN?\r\n" >$usb_dev
-    echo -en "AT+CCID\r\n" >$usb_dev
-    echo -en "ATI\r\n" >$usb_dev
+    echo -en "AT+CPIN?\r\n" >$RAW_USB_DEV
+    echo -en "AT+CCID\r\n" >$RAW_USB_DEV
+    echo -en "ATI\r\n" >$RAW_USB_DEV
 
     # registration status
-    echo -en "AT+CEREG?\r\n" >$usb_dev
-    echo -en "AT+QENG=\"SERVINGCELL\"\r\n" >$usb_dev
+    echo -en "AT+CEREG?\r\n" >$RAW_USB_DEV
+    echo -en "AT+QENG=\"SERVINGCELL\"\r\n" >$RAW_USB_DEV
 
     # data connection
-    echo -en "AT+CGACT?\r\n" >$usb_dev
+    echo -en "AT+CGACT?\r\n" >$RAW_USB_DEV
 
     # frequancy info
-    echo -en "AT+QNWINFO\r\n" >$usb_dev
+    echo -en "AT+QNWINFO\r\n" >$RAW_USB_DEV
     # signal strength
-    echo -en "AT+CSQ\r\n" >$usb_dev
+    echo -en "AT+CSQ\r\n" >$RAW_USB_DEV
 
     sleep 10
     sync "${LOG_FILE_PATH}"
@@ -708,7 +715,7 @@ AT_send() {
         debug "AT command '$at_command' failed: $at_result"
         # When the ModemManager log shows a large number of "[modem0] couldn't enable interface: 'Invalid transition'".
         if grep -q -i 'operation not permitted' <<<"$at_result"; then
-            touch $HARD_RESET_REQUIRED_FILE
+            touch "$HARD_RESET_REQUIRED_FILE"
         fi
         return 1
     fi
@@ -747,13 +754,40 @@ set_mbn() {
     }
 }
 
+# check sim card in ERROR: 13 state
+# dbus will simple return SIM is not inserted, so here must use raw AT command
+raw_at_check_error_13() {
+    local log_pid log_file
+    log_file=$(mktemp)
+    if [ ! -e $RAW_USB_DEV ]; then
+        echo "can not find $RAW_USB_DEV, maybe modem is bricked or is hard reseting"
+        return 1
+    fi
+
+    cat $RAW_USB_DEV >>"${log_file}" &
+    log_pid=$!
+
+    # sim card status
+    echo -en "AT+CPIN?\r\n" >$RAW_USB_DEV
+    sleep 10
+
+    kill $log_pid &>/dev/null || true
+    sync "$log_file"
+    cat $log_file
+    grep -q 'ERROR: 13' "$log_file"
+}
+
 # AT+CPIN?
 # READY found
 check_sim_status() {
     local result
     get_modem_index || return 1
     if ! result=$(AT_send 'AT+CPIN?'); then
-        return 2
+        if raw_at_check_error_13; then
+            return 13
+        else
+            return 2
+        fi
     fi
     debug "AT+CPIN? result:$result"
 
@@ -1079,7 +1113,7 @@ check_board_loop() {
         elif [ $code -eq 1 ]; then
             # not match, do nothing
             return 1
-        elif [ $i -ge 3 ]; then # get firmware revision failed third time
+        elif [ "$i" -ge 3 ]; then # get firmware revision failed third time
             restart_module_and_record || {
                 echo "restart module at check board loop failed"
                 return 1
@@ -1379,8 +1413,8 @@ main_loop() {
             break
         fi
 
-        if [ -e $HARD_RESET_REQUIRED_FILE ]; then
-            rm $HARD_RESET_REQUIRED_FILE
+        if [ -e "$HARD_RESET_REQUIRED_FILE" ]; then
+            rm "$HARD_RESET_REQUIRED_FILE"
             echo "hard reset required"
             hard_reset_and_record || {
                 echo "hard reset failed"
@@ -1410,7 +1444,7 @@ extern_source() {
 
 update_version() {
     local version
-    version=$(tail -1 VERSION)
+    version=$(tail -1 "$OWN_DIR/VERSION")
     if [ "$VERSION" != "$version" ]; then
         if [ -n "$VERSION" ]; then
             echo "Cellular Guard updated to '$version'"
@@ -1546,10 +1580,16 @@ if [ "$DEBUG" = '1' ]; then
     set -x
 fi
 
+if [[ $0 != "${BASH_SOURCE[0]}" ]]; then
+    OWN_DIR="$(readlink -f "$(dirname "${BASH_SOURCE[0]}")")"
+else
+    OWN_DIR="$(readlink -f "$(dirname "$0")")"
+fi
+
 if ! $SOURCE_MODE; then
     if [ "$PERSISTENT_LOGGING" = y ]; then
         # redirect log to file
-        if mkdir -p "$(dirname $LOG_FILE_PATH)"; then
+        if mkdir -p "$(dirname "$LOG_FILE_PATH")"; then
             if [ "$DEBUG" = '1' ]; then
                 echo "no log to file in debug=1 mode"
             else
@@ -1557,7 +1597,7 @@ if ! $SOURCE_MODE; then
                 exec &> >(tee_log)
             fi
         else
-            echo "can't create log file path $(dirname $LOG_FILE_PATH), no output"
+            echo "can't create log file path $(dirname "$LOG_FILE_PATH"), no output"
             exec &>/dev/null
         fi
     else
