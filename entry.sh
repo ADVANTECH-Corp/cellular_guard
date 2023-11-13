@@ -461,7 +461,7 @@ log_shell_leave() {
 
 update_status() {
     local status="$1"
-    if [ "$status" != "$CURRENT_STATUS" ]; then
+    if [ ! -f "$STATUS_FILE_PATH" ] || [ "$status" != "$CURRENT_STATUS" ]; then
         echo "status changed from $CURRENT_STATUS to $status"
         CURRENT_STATUS="$status"
         STATE_DIRTY=true
@@ -640,6 +640,7 @@ get_modem_index() {
     local restart_pending=false
 
     # max wait time 30*5=150 seconds
+    # worst wait time when dbus-send timeout: 30*(5+5)=300 seconds
     for check_count in {1..30}; do
         if $restart_pending; then
             if is_modemmanager_active; then
@@ -649,7 +650,7 @@ get_modem_index() {
             fi
         fi
         index=$(
-            dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
+            dbus-send --reply-timeout=5000 --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
                 /org/freedesktop/ModemManager1 org.freedesktop.DBus.ObjectManager.GetManagedObjects |
                 grep -Eo '/org/freedesktop/ModemManager1/Modem/[0-9]+' |
                 sed -En 's|/org/freedesktop/ModemManager1/Modem/([0-9]+)|\1|p' | head -1
@@ -706,7 +707,7 @@ AT_send() {
     # if send: AT+QENG="SERVINGCELL"
     # output:  +QENG: "servingcell","NOCONN","LTE","FDD",262,01,25A5507,212,500,1,5,5,67BD,-93,-7,-65,15,28
     at_result=$(
-        dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
+        dbus-send --reply-timeout=5000 --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
             /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.Command \
             string:"$at_command" uint32:2000 2>&1 | sed -e 's|^[[:space:]]*||'
     )

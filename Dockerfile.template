@@ -6,6 +6,7 @@ RUN install_packages dbus bash iproute2 iputils coreutils jq usbutils
 
 WORKDIR /app
 
-COPY --chmod=755 entry.sh gpio VERSION cellular_guard.env ./
+COPY entry.sh gpio VERSION cellular_guard.env ./
+RUN chmod 755 entry.sh gpio VERSION cellular_guard.env
 
 ENTRYPOINT ["bash","./entry.sh"]
