@@ -416,7 +416,8 @@ timeout() {
     while kill -0 $pid &>/dev/null; do
         if [ "$current" -gt "$time" ]; then
             kill $pid &>/dev/null || true
-            return 1
+            echo "Command '$*' timeout with $time seconds"
+            return 127
         fi
         sleep 0.1
         ((current++))
@@ -727,6 +728,9 @@ get_modem_index() {
         record_error MM_NO_INDEX
     fi
 
+    # force hard reset because get index timeout
+    touch "$HARD_RESET_REQUIRED_FILE"
+
     # Possibilities include:
     # 1. ModemManager restart fail
     # 2. Dbus error
@@ -805,7 +809,7 @@ raw_at_check_error_13() {
         echo "can not find $RAW_USB_DEV, maybe modem is bricked or is hard reseting"
         return 1
     fi
-
+    debug "use raw AT 'AT+CPIN?' command to check sim card status"
     cat $RAW_USB_DEV >>"${log_file}" &
     log_pid=$!
 
@@ -815,24 +819,38 @@ raw_at_check_error_13() {
 
     kill $log_pid &>/dev/null || true
     sync "$log_file"
-    cat $log_file
+    debug "raw AT command result:"
+    debug "$(cat "$log_file")"
     grep -q 'ERROR: 13' "$log_file"
 }
 
 # AT+CPIN?
 # READY found
+# return:
+#    0: sim card ready
+#    1: sim card not ready, and other unknown error(like dbus error and AT timeout)
+#    10: sim card not found(by dbus messgae: SIM not inserted or ERROR: 10)
+#    13: sim card error 13
 check_sim_status() {
-    local result
+    local result code
     get_modem_index || return 1
-    if ! result=$(AT_send 'AT+CPIN?'); then
-        if raw_at_check_error_13; then
+    result=$(AT_send 'AT+CPIN?')
+    code=$?
+    debug "AT+CPIN? result:$result"
+    if [ "$code" -ne 0 ]; then
+        timeout 15 raw_at_check_error_13
+        code=$?
+        if [ "$code" -eq 0 ]; then
             return 13
-        else
-            return 2
+        elif [ "$code" -eq 1 ]; then
+            # Not Error: 13 found, but here is dbus error
+            # so it will be SIM not inserted message
+            return 10
+        else # timeout
+            return 1
         fi
     fi
-    debug "AT+CPIN? result:$result"
-
+    
     # ERROR: 13: sim error
     # ERROR: 10: no sim
     if echo "$result" | grep -Eq 'ERROR: 10'; then
@@ -1202,7 +1220,7 @@ sim_status_loop() {
         last_code=$?
         # 10 means no sim
         # 2 means dbus error, SIM not inserted
-        if [ "$last_code" -eq 10 ] || [ "$last_code" -eq 2 ]; then
+        if [ "$last_code" -eq 10 ]; then
             echo "sim card communication exception"
             update_status "${NETWORK_STATUS["SIM_ERROR10"]}"
             record_error SIM_ERROR10
@@ -1458,7 +1476,7 @@ main_loop() {
 
         if [ -e "$HARD_RESET_REQUIRED_FILE" ]; then
             rm "$HARD_RESET_REQUIRED_FILE"
-            echo "hard reset required, now start hard reset"
+            echo "Due to the above error, a hard reset is required, and the hard reset will now begin"
             hard_reset_and_record || {
                 echo "hard reset failed, maybe modem is gone"
             }
