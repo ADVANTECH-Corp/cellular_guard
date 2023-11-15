@@ -386,6 +386,34 @@ wait_for() {
     return 1
 }
 
+# Args:
+#   time: timeout seconds
+#   command: remain as commands
+# Output:
+#   None
+timeout() {
+    if [ $# -lt 2 ]; then
+        echo 'Wrong usage of timeout'
+        return 1
+    fi
+    local time="$1"
+    shift
+    local pid current=0
+    time=$((time * 10))
+    # background running
+    "$@" &
+    pid=$!
+    while kill -0 $pid &>/dev/null; do
+        if [ "$current" -gt "$time" ]; then
+            kill $pid &>/dev/null || true
+            return 1
+        fi
+        sleep 0.1
+        ((current++))
+    done
+    wait $pid
+}
+
 # log message to file with date prefix
 log_to_file() {
     if [ "$PERSISTENT_LOGGING" != y ]; then
@@ -541,7 +569,7 @@ is_modem_usb_ready() {
 
 # hardware reset 4G module
 hard_reset_and_record() {
-    at_log_through_usb
+    timeout 15 at_log_through_usb
 
     if [ -e /sys/bus/platform/devices/misc-adv-gpio/minipcie_reset ]; then
         record_error MODEM_HARD_RESET
@@ -662,7 +690,7 @@ get_modem_index() {
             if ((check_count % 12 == 0)); then
                 echo "get modem index timeout, will restart ModemManager"
                 # do some log by raw AT command
-                at_log_through_usb
+                timeout 15 at_log_through_usb
 
                 if $restart_pending; then
                     debug "ModemManager restart failed"
@@ -1186,15 +1214,16 @@ sim_status_loop() {
                 else
                     ((current_sim_error_count++))
                 fi
-                echo "restart modem module due to sim card problem"
 
                 # hard reset 4G module when can't connect network after 2th At reset 4G module.
                 if [ "$current_sim_error_count" -ge 3 ]; then
+                    echo "hard reset modem module due to sim card failed larger than 3 times"
                     hard_reset_and_record || {
                         echo "hard reset modem at sim status loop failed"
                         return 1
                     }
                 else
+                    echo "restart modem module due to sim card problem"
                     restart_module_and_record || {
                         echo "restart module at sim status loop failed"
                         return 1
@@ -1416,11 +1445,11 @@ main_loop() {
 
         if [ -e "$HARD_RESET_REQUIRED_FILE" ]; then
             rm "$HARD_RESET_REQUIRED_FILE"
-            echo "hard reset required"
+            echo "hard reset required, now start hard reset"
             hard_reset_and_record || {
-                echo "hard reset failed"
-                return 1
+                echo "hard reset failed, maybe modem is gone"
             }
+            continue
         fi
 
         echo "sleep $CHECK_INTERVAL for next loop"
