@@ -93,7 +93,8 @@ declare -Arg NETWORK_STATUS=(
     ["NETWORK_ERROR"]="network_error"
     ["NETWORK_ERROR_NO_IP"]="network_error_no_ip"
     ["NETWORK_ERROR_LOW_SIGNAL"]="network_error_low_signal"
-    ["MODEM_BRICKED"]="modem_bricked"
+    ["MODEM_LSUSB_QUALCOMM"]="modem_lsusb_qualcomm"
+    ["MODEM_LSUSB_NO_INFO"]="modem_lsusb_no_info"
     ["MODEM_UNKNOWN"]="modem_unknown"
     ["MODEM_MANAGER_ERR"]="modem_manager_err"
 )
@@ -416,7 +417,7 @@ timeout() {
     while kill -0 $pid &>/dev/null; do
         if [ "$current" -gt "$time" ]; then
             kill $pid &>/dev/null || true
-            echo "Command '$*' timeout with $time seconds"
+            echo "Command '$*' timeout with $((time / 10)) seconds"
             return 127
         fi
         sleep 0.1
@@ -850,7 +851,7 @@ check_sim_status() {
             return 1
         fi
     fi
-    
+
     # ERROR: 13: sim error
     # ERROR: 10: no sim
     if echo "$result" | grep -Eq 'ERROR: 10'; then
@@ -954,10 +955,13 @@ check_data_connection() {
 detect_modem_type() {
     if lsusb | grep -q -i -e 'Quectel.*EC21'; then
         return 0
-    elif [ "$(lsusb | grep -c -e 'Bus 002')" -eq 1 ] ||
-        lsusb | grep -q -i -e 'Qualcomm.*QHSUSB'; then
-        # bus 002 only has a controller, no other node, or Qualcomm.*QHSUSB found, mean modem is bricked
-        update_status "${NETWORK_STATUS["MODEM_BRICKED"]}"
+    elif lsusb | grep -q -i -e 'Qualcomm.*QHSUSB'; then
+        # Qualcomm.*QHSUSB found, mean modem is bricked
+        update_status "${NETWORK_STATUS["MODEM_LSUSB_QUALCOMM"]}"
+        return 1
+    elif [ "$(lsusb | grep -c -e 'Bus 002')" -eq 1 ]; then
+        # bus 002 only has a controller, no other node
+        update_status "${NETWORK_STATUS["MODEM_LSUSB_NO_INFO"]}"
         return 1
     else # bus 002 has 2 devices but is not Quectel and not Qualcomm QHSUSB
         update_status "${NETWORK_STATUS["MODEM_UNKNOWN"]}"
