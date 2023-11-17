@@ -423,7 +423,7 @@ timeout() {
         sleep 0.1
         ((current++))
     done
-    wait $pid
+    wait $pid &>/dev/null
 }
 
 # log message to file with date prefix
