@@ -540,6 +540,10 @@ truncate_log() {
     fi
 }
 
+grep_true(){
+    grep "$@" || true
+}
+
 # run AT command directly to modem, log output to file
 # not dbus-send to avoid potential problems with the ModemManager
 at_log_through_usb() {
@@ -665,7 +669,7 @@ is_modemmanager_index_ready() {
     index=$(
         dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
             /org/freedesktop/ModemManager1 org.freedesktop.DBus.ObjectManager.GetManagedObjects |
-            grep -Eo '/org/freedesktop/ModemManager1/Modem/[0-9]+' |
+            grep_true -Eo '/org/freedesktop/ModemManager1/Modem/[0-9]+' |
             sed -En 's|/org/freedesktop/ModemManager1/Modem/([0-9]+)|\1|p' 2>/dev/null | head -1
     )
     if [ $? -ne 0 ] || [ -z "$index" ]; then
@@ -693,7 +697,7 @@ get_modem_index() {
         index=$(
             dbus-send --reply-timeout=5000 --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
                 /org/freedesktop/ModemManager1 org.freedesktop.DBus.ObjectManager.GetManagedObjects |
-                grep -Eo '/org/freedesktop/ModemManager1/Modem/[0-9]+' |
+                grep_true -Eo '/org/freedesktop/ModemManager1/Modem/[0-9]+' |
                 sed -En 's|/org/freedesktop/ModemManager1/Modem/([0-9]+)|\1|p' | head -1
         )
         code=$?
