@@ -54,15 +54,15 @@
       "count": "2",
       "last_time": "2023-10-18T07:45:05Z"
     },
+    "modem_manager_err_no_index": {
+      "count": "2",
+      "last_time": "2023-10-18T07:45:05Z"
+    },
     "modem_frequency_clear": {
       "count": "3",
       "count_success": "1",
       "last_time": "2023-10-18T07:45:05Z",
       "last_time_success": "2023-10-17T19:25:23Z"
-    },
-    "mm_no_index": {
-      "count": "2",
-      "last_time": "2023-10-18T07:45:05Z"
     }
   }
 }

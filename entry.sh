@@ -106,6 +106,7 @@ declare -Ag ERROR_COUNTS=(
     ["NETWORK_ERROR_NO_IP"]=0
     ["NETWORK_ERROR_LOW_SIGNAL"]=0
     ["MODEM_MANAGER_ERR"]=0
+    ["MODEM_MANAGER_ERR_NO_INDEX"]=0
     ["MODEM_FREQUENCY_CLEAR"]=0
     ["MODEM_FREQUENCY_CLEAR_SUCCESS"]=0
     ["MM_RESTART"]=0
@@ -116,7 +117,6 @@ declare -Ag ERROR_COUNTS=(
     ["MODEM_SOFT_RESET_SUCCESS"]=0
     ["MODEM_HARD_RESET"]=0
     ["MODEM_HARD_RESET_SUCCESS"]=0
-    ["MM_NO_INDEX"]=0
 )
 
 declare -Ag ERROR_TIMES=(
@@ -134,9 +134,10 @@ declare -Ag ERROR_TIMES=(
     ["NETWORK_ERROR_LAST_TIME"]=""
     ["NETWORK_ERROR_LOW_SIGNAL_LAST_TIME"]=""
     ["MODEM_MANAGER_ERR_LAST_TIME"]=""
+    ["MODEM_MANAGER_ERR_NO_INDEX_LAST_TIME"]=""
     ["MODEM_FREQUENCY_CLEAR_LAST_TIME"]=""
     ["MODEM_FREQUENCY_CLEAR_LAST_TIME_SUCCESS"]=""
-    ["MM_NO_INDEX_LAST_TIME"]=""
+
 )
 
 # Current cellular network status, initial to ok
@@ -227,15 +228,15 @@ initial_state() {
             ERROR_COUNTS[\"MODEM_MANAGER_ERR\"]=\(.modem_manager_err.count // "0")
             ERROR_TIMES[\"MODEM_MANAGER_ERR_LAST_TIME\"]=\(.modem_manager_err.last_time // "")
 
+            # extra modem_manager_err_no_index
+            ERROR_COUNTS[\"MODEM_MANAGER_ERR_NO_INDEX\"]=\(.modem_manager_err_no_index.count // "0")
+            ERROR_TIMES[\"MODEM_MANAGER_ERR_NO_INDEX_LAST_TIME\"]=\(.modem_manager_err_no_index.last_time // "")
+
             # extra modem_frequency_clear
             ERROR_COUNTS[\"MODEM_FREQUENCY_CLEAR\"]=\(.modem_frequency_clear.count // "0")
             ERROR_COUNTS[\"MODEM_FREQUENCY_CLEAR_SUCCESS\"]=\(.modem_frequency_clear.count_success // "0")
             ERROR_TIMES[\"MODEM_FREQUENCY_CLEAR_LAST_TIME\"]=\(.modem_frequency_clear.last_time // "")
             ERROR_TIMES[\"MODEM_FREQUENCY_CLEAR_LAST_TIME_SUCCESS\"]=\(.modem_frequency_clear.last_time_success // "")
-
-            # extra mm_no_index
-            ERROR_COUNTS[\"MM_NO_INDEX\"]=\(.mm_no_index.count // "0")
-            ERROR_TIMES[\"MM_NO_INDEX_LAST_TIME\"]=\(.mm_no_index.last_time // "")
 
             # cached ICCID as initial value
             ICCID=\($iccid // "")
@@ -335,15 +336,15 @@ save_state() {
       "count": "${ERROR_COUNTS["MODEM_MANAGER_ERR"]}",
       "last_time": "${ERROR_TIMES["MODEM_MANAGER_ERR_LAST_TIME"]}"
     },
+    "modem_manager_err_no_index": {
+      "count": "${ERROR_COUNTS["MODEM_MANAGER_ERR_NO_INDEX"]}",
+      "last_time": "${ERROR_TIMES["MODEM_MANAGER_ERR_NO_INDEX_LAST_TIME"]}"
+    },
     "modem_frequency_clear": {
       "count": "${ERROR_COUNTS["MODEM_FREQUENCY_CLEAR"]}",
       "count_success": "${ERROR_COUNTS["MODEM_FREQUENCY_CLEAR_SUCCESS"]}",
       "last_time": "${ERROR_TIMES["MODEM_FREQUENCY_CLEAR_LAST_TIME"]}",
       "last_time_success": "${ERROR_TIMES["MODEM_FREQUENCY_CLEAR_LAST_TIME_SUCCESS"]}"
-    },
-    "mm_no_index": {
-      "count": "${ERROR_COUNTS["MM_NO_INDEX"]}",
-      "last_time": "${ERROR_TIMES["MM_NO_INDEX_LAST_TIME"]}"
     }
   }
 }
@@ -722,11 +723,12 @@ get_modem_index() {
             return 0
         fi
     done
+
+    update_status "${NETWORK_STATUS["MODEM_MANAGER_ERR"]}"
     if [ $code -ne 0 ] || $restart_pending; then
         record_error MODEM_MANAGER_ERR
-        update_status "${NETWORK_STATUS["MODEM_MANAGER_ERR"]}"
     else # index is empty, get moden index timeout but ModemManager is running normally
-        record_error MM_NO_INDEX
+        record_error MODEM_MANAGER_ERR_NO_INDEX
     fi
 
     # force hard reset because get index timeout
