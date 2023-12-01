@@ -1142,20 +1142,9 @@ check_board() {
     local board_name
     if [ -e /proc/board ]; then
         board_name=$(cat /proc/board)
-        if ! get_modem_firmware_revision; then
-            echo "can't get modem firmware revision"
-            return 2
-        fi
-        revision=$GLOBAL_VAR
-        debug "board name: $board_name, revision: $revision"
+        debug "board name: $board_name"
         if [[ "$board_name" =~ ^(EBC-RS08|EBC-RS10) ]]; then
-            # current list:
-            # EC21EUXGAR08A06M1G EC21EUXGAR08A07M1G EC21EUXGAR08A04M1G
-            if [[ "$revision" =~ ^EC21EU ]]; then
-                return 0
-            else
-                echo "modem revision not match, current is '$revision'"
-            fi
+            return 0
         else
             echo "board name not match, current is '$board_name'"
         fi
@@ -1170,26 +1159,6 @@ detect_modem_type_loop() {
             return 0
         fi
         sleep 10
-    done
-    return 1
-}
-
-check_board_loop() {
-    for i in {1..5}; do
-        check_board
-        code=$?
-        if [ $code -eq 0 ]; then
-            return 0
-        elif [ $code -eq 1 ]; then
-            # not match, do nothing
-            return 1
-        elif [ "$i" -ge 3 ]; then # get firmware revision failed third time
-            restart_module_and_record || {
-                echo "restart module at check board loop failed"
-                return 1
-            }
-            sleep 30
-        fi
     done
     return 1
 }
@@ -1463,9 +1432,9 @@ jump_run() {
 
 # Process of switching between four modules
 loop_once() {
-    jump_run 0 detect_modem_type_loop || return 1
-    jump_run 1 get_modem_index || return 1
-    jump_run 2 check_board_loop || return 1
+    jump_run 0 check_board || return 1
+    jump_run 1 detect_modem_type_loop || return 1
+    jump_run 2 get_modem_index || return 1
     jump_run 3 mbn_loop || return 1
     jump_run 4 sim_status_loop || return 1
     jump_run 5 network_check_loop || return 1
@@ -1589,9 +1558,9 @@ OPTIONS:
     * -h,--help: Print this.
     * -x,--debug [0|1]: 0: output more details to console, 1: set -x, output all script steps to console.
     * -j,--jump <step>: Jumps to the specified step and exits after completing a loop. 
-        0: detect modem type;
-        1: get modem index;
-        2: check board;
+        0: check board;
+        1: detect modem type;
+        2: get modem index;
         3: mbn check; 
         4: sim status check; 
         5: network ping check.
