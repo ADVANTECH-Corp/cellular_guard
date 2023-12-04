@@ -171,6 +171,8 @@ SHM_FILE='/dev/shm/cellular_guard'
 HARD_RESET_REQUIRED=false
 # board name from dtb
 BOARD_NAME_CONFIG='/proc/board'
+# pid of background state save worker
+STATE_SAVER_PID=
 
 # from script parameters, for debug only
 JUMP=
@@ -530,6 +532,9 @@ debug() {
 
 # Log of exit
 main_shell_leave() {
+    if [ -n "$STATE_SAVER_PID" ]; then
+        kill "$STATE_SAVER_PID" &>/dev/null || true
+    fi
     save_state
     log_to_file "$LOG_FLUSH_FLAG"
     truncate_log
@@ -1499,8 +1504,9 @@ loop_once() {
 # should run at background
 state_save_worker() {
     while true; do
+        # every minute check should save state
+        sleep 1m
         save_state
-        sleep 1h
     done
 }
 
@@ -1508,7 +1514,10 @@ state_save_worker() {
 main_loop() {
 
     debug 'loop start'
+
     state_save_worker &
+    STATE_SAVER_PID=$!
+
     while true; do
         loop_once
         save_state
