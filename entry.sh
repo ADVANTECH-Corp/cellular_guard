@@ -40,7 +40,6 @@ declare -rg CG_BASE_DATA_DIR="${CG_BASE_DATA_DIR:-/mnt/data/cellular_guard}"
 declare -rg STATUS_FILE_PATH="${CG_BASE_DATA_DIR}/status"
 declare -rg LOG_FILE_PATH="${CG_BASE_DATA_DIR}/cellular_guard.log"
 declare -rg STATE_JSON_PATH="${CG_BASE_DATA_DIR}/state.json"
-declare -rg HARD_RESET_REQUIRED_FILE="${CG_BASE_DATA_DIR}/hard_reset_required"
 declare -rg LOG_FLUSH_FLAG='^^^^^^FLUSH^^^^^^'
 
 ######### environment variables #########
@@ -164,12 +163,43 @@ LAST_SAME_LOG_COUNT=0
 MAX_SUPRESSED_LOGS_NUM=10
 # raw at command usb device path
 RAW_USB_DEV='/dev/ttyUSB2'
+# shared memory file path
+SHM_FILE='/dev/shm/cellular_guard'
+SHM_FILE_LOCK='/run/cellular_guard.lock'
+SHM_FD=200
+# whether hard reset is required
+HARD_RESET_REQUIRED=false
 
 # from script parameters, for debug only
 JUMP=
 SOURCE_MODE=false
 DEBUG=
 #  ---------- global variables end ------------
+
+# load variables from shared memory
+load_shm(){
+    if [ -e "$SHM_FILE" ]; then
+        flock -s $SHM_FD
+        source "$SHM_FILE"
+        flock -u $SHM_FD
+    fi
+}
+
+# save variables to shared memory
+save_shm() {
+    flock -x $SHM_FD
+    {
+        declare -p ERROR_COUNTS | sed 's/^declare -/declare -g/'
+        declare -p ERROR_TIMES | sed 's/^declare -/declare -g/'
+        echo "ICCID=$ICCID"
+        echo "VERSION=$VERSION"
+        echo "CURRENT_STATUS=$CURRENT_STATUS"
+        echo "STATE_DIRTY=$STATE_DIRTY"
+        echo "HARD_RESET_REQUIRED=$HARD_RESET_REQUIRED"
+    } > "${SHM_FILE}.save"
+    mv "${SHM_FILE}.save" "$SHM_FILE"
+    flock -u $SHM_FD
+}
 
 initial_state() {
     if [ -e "$STATUS_FILE_PATH" ]; then
@@ -252,6 +282,8 @@ initial_state() {
             return 1
         }
         debug "state init from state.json, initial content: \n$(sed 's/^[ \t]*//;s/[ \t]*$//;/^$/d' <<<"$state_init_script")"
+
+        save_shm
     fi
 }
 
@@ -261,11 +293,13 @@ get_utc_date() {
 
 # check state changes and save it to state.json
 save_state() {
+    load_shm
     if ! $STATE_DIRTY && [ -f "$STATE_JSON_PATH" ]; then
+        local volatile_time current_time
+        volatile_time=$(stat -c '%Y' "$VOLATILE_STATE_FILE_PATH")
         if [ -n "$VOLATILE_STATE_FILE_PATH" ]; then
             if [ -f "$VOLATILE_STATE_FILE_PATH" ]; then
-                local volatile_time json_time
-                volatile_time=$(stat -c '%Y' "$VOLATILE_STATE_FILE_PATH")
+                local json_time
                 json_time=$(stat -c '%Y' "$STATE_JSON_PATH")
                 if [ "$volatile_time" -ne "$json_time" ]; then
                     cp -T -p "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH"
@@ -275,7 +309,10 @@ save_state() {
                 cp -T -p "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH"
             fi
         fi
-        return
+        current_time=$(date +%s)
+        if [ "$volatile_time" -gt "$((current_time - 3600))" ]; then
+            return
+        fi
     fi
     local save="$STATE_JSON_PATH.save"
     mkdir -p "$(dirname "$save")"
@@ -356,6 +393,7 @@ EOF
         cp -T -p "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH"
     fi
     STATE_DIRTY=false
+    save_shm
 }
 
 # plus count of error type with last time
@@ -365,6 +403,8 @@ record_error() {
     local error_type="$1"
     local success="$2"
 
+    load_shm
+
     if [ -n "$success" ] && $success; then
         ERROR_COUNTS["$error_type"_SUCCESS]=$((ERROR_COUNTS["$error_type"_SUCCESS] + 1))
         ERROR_TIMES["$error_type"_LAST_TIME_SUCCESS]=${ERROR_TIMES["$error_type"_LAST_TIME]}
@@ -373,6 +413,8 @@ record_error() {
         ERROR_TIMES["$error_type"_LAST_TIME]="$(get_utc_date)"
     fi
     STATE_DIRTY=true
+
+    save_shm
 }
 
 # $1: interval to check
@@ -494,6 +536,9 @@ main_shell_leave() {
     truncate_log
     log_to_file "cellular guard exited, exit code: $?"
     sync "$LOG_FILE_PATH"
+    if [ -e "$SHM_FILE" ];then
+        rm "$SHM_FILE"
+    fi
 }
 
 log_shell_leave() {
@@ -502,6 +547,9 @@ log_shell_leave() {
 
 update_status() {
     local status="$1"
+
+    load_shm
+
     if [ ! -f "$STATUS_FILE_PATH" ] || [ "$status" != "$CURRENT_STATUS" ]; then
         echo "status changed from $CURRENT_STATUS to $status"
         CURRENT_STATUS="$status"
@@ -517,6 +565,8 @@ update_status() {
     echo -n "$*" >"$save"
     sync "$save"
     mv "$save" "$STATUS_FILE_PATH"
+
+    save_shm
 }
 
 # if the log exceeds the max size, halve it
@@ -540,7 +590,7 @@ truncate_log() {
     fi
 }
 
-grep_true(){
+grep_true() {
     grep "$@" || true
 }
 
@@ -736,7 +786,8 @@ get_modem_index() {
     fi
 
     # force hard reset because get index timeout
-    touch "$HARD_RESET_REQUIRED_FILE"
+    HARD_RESET_REQUIRED=true
+    save_shm
 
     # Possibilities include:
     # 1. ModemManager restart fail
@@ -768,7 +819,8 @@ AT_send() {
         debug "AT command '$at_command' failed: $at_result"
         # When the ModemManager log shows a large number of "[modem0] couldn't enable interface: 'Invalid transition'".
         if grep -q -i 'operation not permitted' <<<"$at_result"; then
-            touch "$HARD_RESET_REQUIRED_FILE"
+            HARD_RESET_REQUIRED=true
+            save_shm
         fi
         return 1
     fi
@@ -886,6 +938,7 @@ check_sim_ccid() {
         # cache iccid for state report
         ICCID="$iccid"
         STATE_DIRTY=true
+        save_shm
     fi
 }
 
@@ -1440,10 +1493,20 @@ loop_once() {
     jump_run 5 network_check_loop || return 1
 }
 
+# Save state every hour in a loop
+# should run at background
+state_save_worker() {
+    while true; do
+        save_state
+        sleep 1h
+    done
+}
+
 # Entry of "main program module"
 main_loop() {
 
     debug 'loop start'
+    state_save_worker &
     while true; do
         loop_once
         save_state
@@ -1453,8 +1516,10 @@ main_loop() {
             break
         fi
 
-        if [ -e "$HARD_RESET_REQUIRED_FILE" ]; then
-            rm "$HARD_RESET_REQUIRED_FILE"
+        load_shm
+        if $HARD_RESET_REQUIRED; then
+            HARD_RESET_REQUIRED=false
+            save_shm
             echo "Due to the above error, a hard reset is required, and the hard reset will now begin"
             hard_reset_and_record || {
                 echo "hard reset failed, maybe modem is gone"
@@ -1493,6 +1558,7 @@ update_version() {
         fi
         VERSION="$version"
         STATE_DIRTY=true
+        save_shm
     else
         echo "Cellular Guard: $VERSION"
     fi
@@ -1644,6 +1710,8 @@ if ! $SOURCE_MODE; then
         # silence output
         exec &>/dev/null
     fi
+
+    exec $SHM_FD<>$SHM_FILE_LOCK
 fi
 
 initial_state
