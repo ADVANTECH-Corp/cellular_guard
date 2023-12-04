@@ -167,7 +167,6 @@ MAX_SUPRESSED_LOGS_NUM=10
 RAW_USB_DEV='/dev/ttyUSB2'
 # shared memory file path
 SHM_FILE='/dev/shm/cellular_guard'
-SHM_FILE_LOCK='/dev/shm/cellular_guard.lock'
 # whether hard reset is required
 HARD_RESET_REQUIRED=false
 # board name from dtb
@@ -182,18 +181,12 @@ DEBUG=
 # load variables from shared memory
 load_shm() {
     if [ -e "$SHM_FILE" ]; then
-        exec 200>"$SHM_FILE_LOCK"
-        flock -s 200
         source "$SHM_FILE"
-        flock -u 200
-        exec 200>&-
     fi
 }
 
 # save variables to shared memory
 save_shm() {
-    exec 200>"$SHM_FILE_LOCK"
-    flock -x 200
     {
         declare -p ERROR_COUNTS | sed 's/^declare -/declare -g/'
         declare -p ERROR_TIMES | sed 's/^declare -/declare -g/'
@@ -204,8 +197,6 @@ save_shm() {
         echo "HARD_RESET_REQUIRED=$HARD_RESET_REQUIRED"
     } >"${SHM_FILE}.save"
     mv "${SHM_FILE}.save" "$SHM_FILE"
-    flock -u 200
-    exec 200>&-
 }
 
 initial_state() {
@@ -546,7 +537,6 @@ main_shell_leave() {
     sync "$LOG_FILE_PATH"
     if [ -e "$SHM_FILE" ]; then
         rm "$SHM_FILE"
-        rm "$SHM_FILE_LOCK" &>/dev/null || true
     fi
 }
 
@@ -567,6 +557,7 @@ update_status() {
         return 0
     fi
     if [ "$PERSISTENT_LOGGING" != y ]; then
+        save_shm
         return 0
     fi
     mkdir -p "$(dirname "$STATUS_FILE_PATH")" || return
