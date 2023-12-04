@@ -97,6 +97,7 @@ declare -Arg NETWORK_STATUS=(
     ["MODEM_UNKNOWN"]="modem_unknown"
     ["MODEM_MANAGER_ERR"]="modem_manager_err"
     ["MODEM_MANAGER_ERR_NO_INDEX"]="modem_manager_err_no_index"
+    ["UNKNOWN_BOARD"]="unknown_board"
 )
 
 declare -Ag ERROR_COUNTS=(
@@ -166,7 +167,7 @@ MAX_SUPRESSED_LOGS_NUM=10
 RAW_USB_DEV='/dev/ttyUSB2'
 # shared memory file path
 SHM_FILE='/dev/shm/cellular_guard'
-SHM_FILE_LOCK='/run/cellular_guard.lock'
+SHM_FILE_LOCK='/dev/shm/cellular_guard.lock'
 # whether hard reset is required
 HARD_RESET_REQUIRED=false
 
@@ -543,6 +544,7 @@ main_shell_leave() {
     sync "$LOG_FILE_PATH"
     if [ -e "$SHM_FILE" ]; then
         rm "$SHM_FILE"
+        rm "$SHM_FILE_LOCK" &>/dev/null || true
     fi
 }
 
@@ -1208,6 +1210,7 @@ check_board() {
             echo "board name not match, current is '$board_name'"
         fi
     fi
+    update_status "${NETWORK_STATUS["UNKNOWN_BOARD"]}"
     return 1
 }
 
