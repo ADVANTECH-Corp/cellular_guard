@@ -167,7 +167,6 @@ RAW_USB_DEV='/dev/ttyUSB2'
 # shared memory file path
 SHM_FILE='/dev/shm/cellular_guard'
 SHM_FILE_LOCK='/run/cellular_guard.lock'
-SHM_FD=200
 # whether hard reset is required
 HARD_RESET_REQUIRED=false
 
@@ -180,15 +179,18 @@ DEBUG=
 # load variables from shared memory
 load_shm() {
     if [ -e "$SHM_FILE" ]; then
-        flock -s $SHM_FD
+        exec 200>"$SHM_FILE_LOCK"
+        flock -s 200
         source "$SHM_FILE"
-        flock -u $SHM_FD
+        flock -u 200
+        exec 200>&-
     fi
 }
 
 # save variables to shared memory
 save_shm() {
-    flock -x $SHM_FD
+    exec 200>"$SHM_FILE_LOCK"
+    flock -x 200
     {
         declare -p ERROR_COUNTS | sed 's/^declare -/declare -g/'
         declare -p ERROR_TIMES | sed 's/^declare -/declare -g/'
@@ -199,7 +201,8 @@ save_shm() {
         echo "HARD_RESET_REQUIRED=$HARD_RESET_REQUIRED"
     } >"${SHM_FILE}.save"
     mv "${SHM_FILE}.save" "$SHM_FILE"
-    flock -u $SHM_FD
+    flock -u 200
+    exec 200>&-
 }
 
 initial_state() {
@@ -296,12 +299,12 @@ get_utc_date() {
 save_state() {
     load_shm
     if ! $STATE_DIRTY && [ -f "$STATE_JSON_PATH" ]; then
-        local volatile_time current_time
-        volatile_time=$(stat -c '%Y' "$VOLATILE_STATE_FILE_PATH")
+        local json_time current_time
+        json_time=$(stat -c '%Y' "$STATE_JSON_PATH")
         if [ -n "$VOLATILE_STATE_FILE_PATH" ]; then
             if [ -f "$VOLATILE_STATE_FILE_PATH" ]; then
-                local json_time
-                json_time=$(stat -c '%Y' "$STATE_JSON_PATH")
+                local volatile_time
+                volatile_time=$(stat -c '%Y' "$VOLATILE_STATE_FILE_PATH")
                 if [ "$volatile_time" -ne "$json_time" ]; then
                     cp -T -p "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH"
                 fi
@@ -311,7 +314,8 @@ save_state() {
             fi
         fi
         current_time=$(date +%s)
-        if [ "$volatile_time" -gt "$((current_time - 3600))" ]; then
+        # 1 hour younger, not update
+        if [ "$((current_time - json_time))" -lt 3600 ]; then
             return
         fi
     fi
@@ -1712,8 +1716,6 @@ if ! $SOURCE_MODE; then
         # silence output
         exec &>/dev/null
     fi
-
-    exec $SHM_FD <>$SHM_FILE_LOCK
 fi
 
 initial_state
