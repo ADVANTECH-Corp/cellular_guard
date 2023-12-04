@@ -170,6 +170,8 @@ SHM_FILE='/dev/shm/cellular_guard'
 SHM_FILE_LOCK='/dev/shm/cellular_guard.lock'
 # whether hard reset is required
 HARD_RESET_REQUIRED=false
+# board name from dtb
+BOARD_NAME_CONFIG='/proc/board'
 
 # from script parameters, for debug only
 JUMP=
@@ -1201,8 +1203,8 @@ ping_network() {
 # Return 0 if match
 check_board() {
     local board_name
-    if [ -e /proc/board ]; then
-        board_name=$(cat /proc/board)
+    if [ -e "$BOARD_NAME_CONFIG" ]; then
+        board_name=$(cat "$BOARD_NAME_CONFIG")
         debug "board name: $board_name"
         if [[ "$board_name" =~ ^(EBC-RS08|EBC-RS10) ]]; then
             return 0
