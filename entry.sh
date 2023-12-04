@@ -96,6 +96,7 @@ declare -Arg NETWORK_STATUS=(
     ["MODEM_LSUSB_NO_INFO"]="modem_lsusb_no_info"
     ["MODEM_UNKNOWN"]="modem_unknown"
     ["MODEM_MANAGER_ERR"]="modem_manager_err"
+    ["MODEM_MANAGER_ERR_NO_INDEX"]="modem_manager_err_no_index"
 )
 
 declare -Ag ERROR_COUNTS=(
@@ -177,7 +178,7 @@ DEBUG=
 #  ---------- global variables end ------------
 
 # load variables from shared memory
-load_shm(){
+load_shm() {
     if [ -e "$SHM_FILE" ]; then
         flock -s $SHM_FD
         source "$SHM_FILE"
@@ -196,7 +197,7 @@ save_shm() {
         echo "CURRENT_STATUS=$CURRENT_STATUS"
         echo "STATE_DIRTY=$STATE_DIRTY"
         echo "HARD_RESET_REQUIRED=$HARD_RESET_REQUIRED"
-    } > "${SHM_FILE}.save"
+    } >"${SHM_FILE}.save"
     mv "${SHM_FILE}.save" "$SHM_FILE"
     flock -u $SHM_FD
 }
@@ -536,7 +537,7 @@ main_shell_leave() {
     truncate_log
     log_to_file "cellular guard exited, exit code: $?"
     sync "$LOG_FILE_PATH"
-    if [ -e "$SHM_FILE" ];then
+    if [ -e "$SHM_FILE" ]; then
         rm "$SHM_FILE"
     fi
 }
@@ -778,10 +779,11 @@ get_modem_index() {
         fi
     done
 
-    update_status "${NETWORK_STATUS["MODEM_MANAGER_ERR"]}"
     if [ $code -ne 0 ] || $restart_pending; then
+        update_status "${NETWORK_STATUS["MODEM_MANAGER_ERR"]}"
         record_error MODEM_MANAGER_ERR
     else # index is empty, get moden index timeout but ModemManager is running normally
+        update_status "${NETWORK_STATUS["MODEM_MANAGER_ERR_NO_INDEX"]}"
         record_error MODEM_MANAGER_ERR_NO_INDEX
     fi
 
@@ -1711,7 +1713,7 @@ if ! $SOURCE_MODE; then
         exec &>/dev/null
     fi
 
-    exec $SHM_FD<>$SHM_FILE_LOCK
+    exec $SHM_FD <>$SHM_FILE_LOCK
 fi
 
 initial_state
