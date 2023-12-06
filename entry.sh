@@ -610,6 +610,8 @@ at_log_through_usb() {
     log_to_file "now start to log raw AT command result"
     cat $RAW_USB_DEV >>"${LOG_FILE_PATH}" &
     log_pid=$!
+    # wait for cat redirect ready
+    sleep 1
 
     # sim card status
     echo -en "AT+CPIN?\r\n" >$RAW_USB_DEV
@@ -875,8 +877,10 @@ raw_at_check_error_13() {
         return 1
     fi
     debug "use raw AT 'AT+CPIN?' command to check sim card status"
-    cat $RAW_USB_DEV >>"${log_file}" &
+    cat $RAW_USB_DEV >"${log_file}" &
     log_pid=$!
+    # wait for cat redirect ready
+    sleep 1
 
     # sim card status
     echo -en "AT+CPIN?\r\n" >$RAW_USB_DEV
