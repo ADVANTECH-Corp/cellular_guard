@@ -1054,6 +1054,9 @@ at_restart_module() {
 at_restart_module_and_record() {
     at_restart_module || return 1
 
+    # wait for index disappear
+    sleep 20
+
     # wait for modem ready
     if wait_for 5 300 is_modemmanager_index_ready; then
         record_error MODEM_SOFT_RESET true
@@ -1076,6 +1079,9 @@ restart_module() {
 # Will wait for modem ready
 restart_module_and_record() {
     restart_module || return 1
+
+    # wait for index disappear
+    sleep 20
 
     # wait for modem ready
     if wait_for 5 300 is_modemmanager_index_ready; then
@@ -1116,6 +1122,9 @@ at_cfun01() {
 
 at_cfun01_and_record() {
     at_cfun01 || return 1
+
+    # wait for index disappear
+    sleep 20
 
     # wait for modem ready
     if wait_for 5 300 is_modemmanager_index_ready; then
