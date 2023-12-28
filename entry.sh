@@ -178,6 +178,10 @@ STATE_SAVER_PID=
 LOOP_FAILED_COUNT=0
 # hard reset failed loop count
 LOOP_FAILED_COUNT_LIMIT=5
+# flock fd num
+LOCK_FD=200
+# flock fd file
+LOCK_FILE='/dev/shm/cellular_guard.lock'
 
 # from script parameters, for debug only
 JUMP=
@@ -300,8 +304,20 @@ get_utc_date() {
     date -u "+%Y-%m-%dT%H:%M:%SZ"
 }
 
+lock() {
+    exec {LOCK_FD}>"$LOCK_FILE"
+    flock "$LOCK_FD"
+}
+
+unlock() {
+    flock -u "$LOCK_FD"
+    exec {LOCK_FD}>&-
+}
+
 # check state changes and save it to state.json
 save_state() {
+
+    lock
     load_shm
     if ! $STATE_DIRTY && [ -f "$STATE_JSON_PATH" ]; then
         local json_time current_time
@@ -321,6 +337,7 @@ save_state() {
         current_time=$(date +%s)
         # 1 hour younger, not update
         if [ "$((current_time - json_time))" -lt 3600 ]; then
+            unlock
             return
         fi
     fi
@@ -408,6 +425,8 @@ EOF
     fi
     STATE_DIRTY=false
     save_shm
+
+    unlock
 }
 
 # plus count of error type with last time
@@ -417,6 +436,7 @@ record_error() {
     local error_type="$1"
     local success="$2"
 
+    lock
     load_shm
 
     if [ -n "$success" ] && $success; then
@@ -429,6 +449,7 @@ record_error() {
     STATE_DIRTY=true
 
     save_shm
+    unlock
 }
 
 # $1: interval to check
@@ -564,7 +585,7 @@ log_shell_leave() {
 
 update_status() {
     local status="$1"
-
+    lock
     load_shm
 
     if [ ! -f "$STATUS_FILE_PATH" ] || [ "$status" != "$CURRENT_STATUS" ]; then
@@ -572,19 +593,26 @@ update_status() {
         CURRENT_STATUS="$status"
         STATE_DIRTY=true
     else
+        unlock
         return 0
     fi
     if [ "$PERSISTENT_LOGGING" != y ]; then
+
         save_shm
+        unlock
         return 0
     fi
-    mkdir -p "$(dirname "$STATUS_FILE_PATH")" || return
+    mkdir -p "$(dirname "$STATUS_FILE_PATH")" || {
+        unlock
+        return
+    }
     local save="$STATUS_FILE_PATH.save"
     echo -n "$*" >"$save"
     sync "$save"
     mv -f "$save" "$STATUS_FILE_PATH"
 
     save_shm
+    unlock
 }
 
 # if the log exceeds the max size, halve it
@@ -806,9 +834,11 @@ get_modem_index() {
         record_error MODEM_MANAGER_ERR_NO_INDEX
     fi
 
+    lock
     # force hard reset because get index timeout
     HARD_RESET_REQUIRED=true
     save_shm
+    unlock
 
     # Possibilities include:
     # 1. ModemManager restart fail
@@ -840,8 +870,10 @@ AT_send() {
         debug "AT command '$at_command' failed: $at_result"
         # When the ModemManager log shows a large number of "[modem0] couldn't enable interface: 'Invalid transition'".
         if grep -q -i 'operation not permitted' <<<"$at_result"; then
+            lock
             HARD_RESET_REQUIRED=true
             save_shm
+            unlock
         fi
         return 1
     fi
@@ -958,10 +990,12 @@ check_sim_ccid() {
 
     iccid="$(echo "$result" | tail -1 | cut -d' ' -f2 | tr -d '\n')"
     if [ "$ICCID" != "$iccid" ]; then
+        lock
         # cache iccid for state report
         ICCID="$iccid"
         STATE_DIRTY=true
         save_shm
+        unlock
     fi
 }
 
@@ -1567,6 +1601,7 @@ main_loop() {
             break
         fi
 
+        lock
         load_shm
         if $HARD_RESET_REQUIRED || ((LOOP_FAILED_COUNT >= LOOP_FAILED_COUNT_LIMIT)); then
             HARD_RESET_REQUIRED=false
@@ -1576,12 +1611,14 @@ main_loop() {
             fi
             LOOP_FAILED_COUNT=0
             save_shm
+            unlock
             echo "Due to the above error, a hard reset is required, and the hard reset will now begin"
             hard_reset_and_record || {
                 echo "hard reset failed, maybe modem is gone"
             }
             continue
         fi
+        unlock
 
         echo "sleep $CHECK_INTERVAL for next loop"
         sleep "$CHECK_INTERVAL"
