@@ -118,6 +118,7 @@ declare -Ag ERROR_COUNTS=(
     ["MODEM_SOFT_RESET_SUCCESS"]=0
     ["MODEM_HARD_RESET"]=0
     ["MODEM_HARD_RESET_SUCCESS"]=0
+    ["LOOP_FAILED_HARD_RESET"]=0
 )
 
 declare -Ag ERROR_TIMES=(
@@ -138,7 +139,7 @@ declare -Ag ERROR_TIMES=(
     ["MODEM_MANAGER_ERR_NO_INDEX_LAST_TIME"]=""
     ["MODEM_FREQUENCY_CLEAR_LAST_TIME"]=""
     ["MODEM_FREQUENCY_CLEAR_LAST_TIME_SUCCESS"]=""
-
+    ["LOOP_FAILED_HARD_RESET_LAST_TIME"]=""
 )
 
 # Current cellular network status, initial to ok
@@ -173,6 +174,10 @@ HARD_RESET_REQUIRED=false
 BOARD_NAME_CONFIG='/proc/board'
 # pid of background state save worker
 STATE_SAVER_PID=
+# failed loop count
+LOOP_FAILED_COUNT=0
+# hard reset failed loop count
+LOOP_FAILED_COUNT_LIMIT=5
 
 # from script parameters, for debug only
 JUMP=
@@ -198,7 +203,7 @@ save_shm() {
         echo "STATE_DIRTY=$STATE_DIRTY"
         echo "HARD_RESET_REQUIRED=$HARD_RESET_REQUIRED"
     } >"${SHM_FILE}.save"
-    mv "${SHM_FILE}.save" "$SHM_FILE"
+    mv -f "${SHM_FILE}.save" "$SHM_FILE"
 }
 
 initial_state() {
@@ -267,6 +272,10 @@ initial_state() {
             ERROR_COUNTS[\"MODEM_FREQUENCY_CLEAR_SUCCESS\"]=\(.modem_frequency_clear.count_success // "0")
             ERROR_TIMES[\"MODEM_FREQUENCY_CLEAR_LAST_TIME\"]=\(.modem_frequency_clear.last_time // "")
             ERROR_TIMES[\"MODEM_FREQUENCY_CLEAR_LAST_TIME_SUCCESS\"]=\(.modem_frequency_clear.last_time_success // "")
+
+            # extra loop_failed_hard_reset
+            ERROR_COUNTS[\"LOOP_FAILED_HARD_RESET\"]=\(.loop_failed_hard_reset.count // "0")
+            ERROR_TIMES[\"LOOP_FAILED_HARD_RESET_LAST_TIME\"]=\(.loop_failed_hard_reset.last_time // "")
 
             # cached ICCID as initial value
             ICCID=\($iccid // "")
@@ -383,12 +392,16 @@ save_state() {
       "count_success": "${ERROR_COUNTS["MODEM_FREQUENCY_CLEAR_SUCCESS"]}",
       "last_time": "${ERROR_TIMES["MODEM_FREQUENCY_CLEAR_LAST_TIME"]}",
       "last_time_success": "${ERROR_TIMES["MODEM_FREQUENCY_CLEAR_LAST_TIME_SUCCESS"]}"
+    },
+    "loop_failed_hard_reset": {
+      "count": "${ERROR_COUNTS["LOOP_FAILED_HARD_RESET"]}",
+      "last_time": "${ERROR_TIMES["LOOP_FAILED_HARD_RESET_LAST_TIME"]}"
     }
   }
 }
 EOF
     sync "$save"
-    mv "$save" "$STATE_JSON_PATH"
+    mv -f "$save" "$STATE_JSON_PATH"
     if [ -n "$VOLATILE_STATE_FILE_PATH" ]; then
         mkdir -p "$(dirname "$VOLATILE_STATE_FILE_PATH")"
         cp -T -p "$STATE_JSON_PATH" "$VOLATILE_STATE_FILE_PATH"
@@ -569,7 +582,7 @@ update_status() {
     local save="$STATUS_FILE_PATH.save"
     echo -n "$*" >"$save"
     sync "$save"
-    mv "$save" "$STATUS_FILE_PATH"
+    mv -f "$save" "$STATUS_FILE_PATH"
 
     save_shm
 }
@@ -588,7 +601,7 @@ truncate_log() {
             line_num=$(wc -l <"$LOG_FILE_PATH")
             tail -n $((line_num / 2)) "${LOG_FILE_PATH}" >"${LOG_FILE_PATH}.save"
             sync "${LOG_FILE_PATH}.save"
-            mv "${LOG_FILE_PATH}.save" "${LOG_FILE_PATH}"
+            mv -f "${LOG_FILE_PATH}.save" "${LOG_FILE_PATH}"
             log_size=$(du -Lks "${LOG_FILE_PATH}" | awk '{print $1}')
             log_to_file "truncate log to $((line_num / 2)) lines, ${log_size}KB"
         fi
@@ -1145,7 +1158,10 @@ cfun01() {
     # NetworkManager will re-enable modem is have connection set
     dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
         /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.Enable \
-        boolean:false || return 1
+        boolean:false || {
+        debug "disable modem failed"
+        return 1
+    }
 
     # set power state to MM_MODEM_POWER_STATE_OFF
     # FIXME: EC21 not supported set power state
@@ -1162,7 +1178,10 @@ cfun01() {
 
     dbus-send --print-reply=literal --type=method_call --system --dest=org.freedesktop.ModemManager1 \
         /org/freedesktop/ModemManager1/Modem/"$MODEM_INDEX" org.freedesktop.ModemManager1.Modem.Enable \
-        boolean:true || return 1
+        boolean:true || {
+        debug "enable modem failed"
+        return 1
+    }
     sleep 5
 }
 
@@ -1477,6 +1496,7 @@ network_check_loop() {
             update_status "${NETWORK_STATUS["OK"]}"
             # use normal interval
             current_sleep_interval=${PING_INTERVAL_NORMAL}
+            LOOP_FAILED_COUNT=0
             echo "ok, will ping again in$(humanize_interval "$current_sleep_interval")"
         fi
         truncate_log
@@ -1532,7 +1552,14 @@ main_loop() {
     STATE_SAVER_PID=$!
 
     while true; do
-        loop_once
+        loop_once || {
+            if ! ping_network; then
+                ((LOOP_FAILED_COUNT++))
+            else
+                LOOP_FAILED_COUNT=0
+            fi
+        }
+
         save_state
 
         if [ -n "$JUMP" ]; then
@@ -1541,8 +1568,13 @@ main_loop() {
         fi
 
         load_shm
-        if $HARD_RESET_REQUIRED; then
+        if $HARD_RESET_REQUIRED || ((LOOP_FAILED_COUNT >= LOOP_FAILED_COUNT_LIMIT)); then
             HARD_RESET_REQUIRED=false
+            if ((LOOP_FAILED_COUNT >= LOOP_FAILED_COUNT_LIMIT)); then
+                echo "loop failed count reach limit:$LOOP_FAILED_COUNT_LIMIT"
+                record_error LOOP_FAILED_HARD_RESET
+            fi
+            LOOP_FAILED_COUNT=0
             save_shm
             echo "Due to the above error, a hard reset is required, and the hard reset will now begin"
             hard_reset_and_record || {
