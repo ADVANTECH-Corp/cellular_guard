@@ -656,18 +656,25 @@ at_log_through_usb() {
 
     # sim card status
     echo -en "AT+CPIN?\r\n" >$RAW_USB_DEV
+    sleep 0.5
     echo -en "AT+CCID\r\n" >$RAW_USB_DEV
+    sleep 0.5
     echo -en "ATI\r\n" >$RAW_USB_DEV
+    sleep 0.5
 
     # registration status
     echo -en "AT+CEREG?\r\n" >$RAW_USB_DEV
+    sleep 0.5
     echo -en "AT+QENG=\"SERVINGCELL\"\r\n" >$RAW_USB_DEV
+    sleep 0.5
 
     # data connection
     echo -en "AT+CGACT?\r\n" >$RAW_USB_DEV
+    sleep 0.5
 
     # frequancy info
     echo -en "AT+QNWINFO\r\n" >$RAW_USB_DEV
+    sleep 0.5
     # signal strength
     echo -en "AT+CSQ\r\n" >$RAW_USB_DEV
 
