@@ -2,7 +2,7 @@ ARG BALENA_ARCH=%%BALENA_ARCH%%
 
 FROM balenalib/$BALENA_ARCH-alpine
 
-RUN install_packages dbus bash iproute2 iputils coreutils jq usbutils
+RUN install_packages dbus bash iproute2 iputils coreutils jq usbutils eudev-hwids
 
 WORKDIR /app
 

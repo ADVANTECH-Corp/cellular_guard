@@ -172,6 +172,12 @@ SHM_FILE='/dev/shm/cellular_guard'
 HARD_RESET_REQUIRED=false
 # board name from dtb
 BOARD_NAME_CONFIG='/proc/board'
+# board names allowed with thier modem usb bus number
+declare -Ag MODEM_USB_BUS=(
+    ["EBC-RS08"]=002
+    ["EBC-RS10"]=002
+    ["EBC-RS16"]=001
+)
 # pid of background state save worker
 STATE_SAVER_PID=
 # failed loop count
@@ -305,6 +311,7 @@ get_utc_date() {
 }
 
 lock() {
+    # exec {var}>file to open a fd
     exec {LOCK_FD}>"$LOCK_FILE"
     flock "$LOCK_FD"
 }
@@ -1076,17 +1083,20 @@ check_data_connection() {
 # check modem type by lsusb
 # return 0 if Quectel EC21
 detect_modem_type() {
+    local board_name bus
+    board_name=$(cat "$BOARD_NAME_CONFIG" | cut -d' ' -f1)
+    bus=${MODEM_USB_BUS["$board_name"]}
     if lsusb | grep -q -i -e 'Quectel.*EC21'; then
         return 0
     elif lsusb | grep -q -i -e 'Qualcomm.*QHSUSB'; then
         # Qualcomm.*QHSUSB found, mean modem is bricked
         update_status "${NETWORK_STATUS["MODEM_LSUSB_QUALCOMM"]}"
         return 1
-    elif [ "$(lsusb | grep -c -e 'Bus 002')" -eq 1 ]; then
-        # bus 002 only has a controller, no other node
+    elif [ "$(lsusb | grep -c -e "Bus $bus")" -eq 1 ]; then
+        # bus only has a controller, no other node
         update_status "${NETWORK_STATUS["MODEM_LSUSB_NO_INFO"]}"
         return 1
-    else # bus 002 has 2 devices but is not Quectel and not Qualcomm QHSUSB
+    else # bus has 2 devices but is not Quectel and not Qualcomm QHSUSB
         update_status "${NETWORK_STATUS["MODEM_UNKNOWN"]}"
         return 1
     fi
@@ -1273,9 +1283,9 @@ ping_network() {
 check_board() {
     local board_name
     if [ -e "$BOARD_NAME_CONFIG" ]; then
-        board_name=$(cat "$BOARD_NAME_CONFIG")
+        board_name=$(cat "$BOARD_NAME_CONFIG" | cut -d' ' -f1)
         debug "board name: $board_name"
-        if [[ "$board_name" =~ ^(EBC-RS08|EBC-RS10) ]]; then
+        if [[ -v MODEM_USB_BUS["$board_name"] ]]; then
             return 0
         else
             echo "board name not match, current is '$board_name'"
