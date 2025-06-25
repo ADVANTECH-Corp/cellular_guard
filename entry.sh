@@ -1088,8 +1088,8 @@ detect_modem_type() {
     bus=${MODEM_USB_BUS["$board_name"]}
     if lsusb | grep -q -i -e 'Quectel.*EC21'; then
         return 0
-    elif lsusb | grep -q -i -e 'Qualcomm.*QHSUSB'; then
-        # Qualcomm.*QHSUSB found, mean modem is bricked
+    elif lsusb | grep -q -i -e 'Qualcomm'; then
+        # Qualcomm found but not EC21, mean modem is bricked
         update_status "${NETWORK_STATUS["MODEM_LSUSB_QUALCOMM"]}"
         return 1
     elif [ "$(lsusb | grep -c -e "Bus $bus")" -eq 1 ]; then
