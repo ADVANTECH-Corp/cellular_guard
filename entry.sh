@@ -185,9 +185,11 @@ LOOP_FAILED_COUNT=0
 # hard reset failed loop count
 LOOP_FAILED_COUNT_LIMIT=5
 # flock fd num
-LOCK_FD=200
+LOCK_FD=
 # flock fd file
 LOCK_FILE='/dev/shm/cellular_guard.lock'
+# indicate current worker
+CURRENT_WORKER=main
 
 # from script parameters, for debug only
 JUMP=
@@ -311,14 +313,30 @@ get_utc_date() {
 }
 
 lock() {
-    # exec {var}>file to open a fd
-    exec {LOCK_FD}>"$LOCK_FILE"
-    flock "$LOCK_FD"
+    if [ -z "$LOCK_FD" ]; then
+        # exec {var}>file to open a fd
+        exec {LOCK_FD}>"$LOCK_FILE"
+    fi
+    if [ "$CURRENT_WORKER" = main ]; then
+        if ! flock -w 10 "$LOCK_FD"; then # timeout 10 seconds
+            # is locked by state_saver
+            # kill state saver to let it release
+            kill $STATE_SAVER_PID
+            wait $STATE_SAVER_PID
+            # get lock again
+            flock "$LOCK_FD"
+            # restart state saver
+            state_save_worker &
+            STATE_SAVER_PID=$!
+        fi
+    else # state_saver worker
+        # blocking to get lock or wait for be killed by main
+        flock "$LOCK_FD"
+    fi
 }
 
 unlock() {
     flock -u "$LOCK_FD"
-    exec {LOCK_FD}>&-
 }
 
 # check state changes and save it to state.json
@@ -1587,6 +1605,9 @@ loop_once() {
 # Save state every hour in a loop
 # should run at background
 state_save_worker() {
+    trap unlock EXIT
+    CURRENT_WORKER=state_saver
+    LOCK_FD=
     while true; do
         # every minute check should save state
         sleep 1m
@@ -1624,7 +1645,11 @@ main_loop() {
             HARD_RESET_REQUIRED=false
             if ((LOOP_FAILED_COUNT >= LOOP_FAILED_COUNT_LIMIT)); then
                 echo "loop failed count reach limit:$LOOP_FAILED_COUNT_LIMIT"
+                save_shm
+                unlock
                 record_error LOOP_FAILED_HARD_RESET
+                lock
+                load_shm
             fi
             LOOP_FAILED_COUNT=0
             save_shm
